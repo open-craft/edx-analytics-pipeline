@@ -181,12 +181,33 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
                     value[10] = ''
 
                 record = OrderItemRecord(*value)
-
                 orderitems.append(record)
             else:
                 if value[6] == '\\N':
                     value[6] = '0.0'
                 transactions.append(TransactionRecord(*value))
+
+        orderitem_partition = defaultdict(list)
+        for orderitem in orderitems:
+            orderitem_partition[orderitem.order_id] = orderitem
+
+        # TODO: figure out the mapping of multiple orders to multiple
+        # transactions.  Easier step is to look at each single transaction
+        # and see if it matches the sum of order items.  We're not yet
+        # prepared to deal with partial transactions.
+        if len(orderitem_partition) > 1:
+            # Don't solve this now, until we actually have cases where we
+                # need to do this.
+                yield ("MULTIPLE_ORDERS", key, orderitems, transactions)
+
+        trans_balance = Decimal(0.0)
+        if len(transactions) > 0:
+            trans_balance = sum([Decimal(transaction.amount) for transaction in transactions])
+        order_balance = Decimal(0.0)
+        order_cost = Decimal(0.0)
+        if len(orderitems):
+            order_balance = sum([Decimal(orderitem.line_item_price) - Decimal(orderitem.refunded_amount) for orderitem in orderitems])
+            order_cost = sum([Decimal(orderitem.line_item_price) for orderitem in orderitems])
 
         if len(transactions) == 0:
             # We have an orderitem with no transaction.  This happens
@@ -227,7 +248,6 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
             # is zero, then no further action is needed.  Otherwise either the order needs
             # to be updated (to reflect that they did actually receive what they ordered),
             # or the balance should be refunded (because they never received what they were charged for).
-            trans_balance = sum([Decimal(transaction.amount) for transaction in transactions])
             code = "NO_ORDER_ZERO_BALANCE" if trans_balance == 0 else "ERROR_NO_ORDER_NONZERO_BALANCE"
             for transaction in transactions:
                 yield ("TRANSACTION_TABLE", self.format_transaction_table_output(code, transaction, None))
@@ -235,10 +255,8 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
 
         # This is the location for the main form of reconciliation.
         # Let's work through some of the easy cases, and work down from there.
-        if len(orderitems) == 1:
+        if len(orderitems) == -1:
             orderitem = orderitems[0]
-            order_balance = Decimal(orderitem.line_item_price) - Decimal(orderitem.refunded_amount)
-            trans_balance = sum([Decimal(transaction.amount) for transaction in transactions])
             if order_balance == trans_balance:
                 code = "{}_BALANCE_MATCHING".format(orderitem.status.upper())
                 if self._orderitem_is_professional_ed(orderitem):
@@ -253,19 +271,16 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
                 for transaction in transactions:
                     yield ("TRANSACTION_TABLE", self.format_transaction_table_output(code, transaction, orderitem))
 
-        elif len(transactions) == 1:
+        elif len(transactions) == -1:
             # If we have multiple orderitems and a single transaction, then we assume the single transaction
             # sums to the value of all the orderitems.
             # TODO: check more invariants:  e.g. same order_processor, same user(?).
             transaction = transactions[0]
-            trans_balance = Decimal(transaction.amount)
-            order_value = sum([Decimal(orderitem.line_item_price) - Decimal(orderitem.refunded_amount) for orderitem in orderitems])
-            order_cost = sum([Decimal(orderitem.line_item_price) for orderitem in orderitems])
-            if order_value == trans_balance:
+            if order_balance == trans_balance:
                 for orderitem in orderitems:
                     code = "PURCHASED_BALANCE_MATCHING"
                     if self._orderitem_is_professional_ed(orderitem):
-                        code = "ERROR_PROFED_PURCHASED_BALANCE_MATCHING"
+                        code = "ERROR_PROFED_{}".format(code)
                     code = self._add_orderitem_status_to_code(orderitem, code)
                     # If we got here with a single transaction, we expect that refunded_amount must be zero.
                     # We just have to divide up the payment transaction over the order items.
@@ -286,27 +301,180 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
                     # Arbitrarily put all the value into one of the order items.
                     item_amount = trans_balance if index == 1 else Decimal(0.0)
                     yield ("TRANSACTION_TABLE", self.format_transaction_table_output(code, transaction, orderitem, item_amount))
-
-        else:
-            # If we're here, we know we have multiple orderitems *and*
-            # multiple transactions.
-            orderitem_partition = defaultdict(list)
-            for orderitem in orderitems:
-                orderitem_partition[orderitem.order_id] = orderitem
-
-            # TODO: figure out the mapping of multiple orders to multiple
-            # transactions.  Easier step is to look at each single transaction
-            # and see if it matches the sum of order items.  We're not yet
-            # prepared to deal with partial transactions.
-            if len(orderitem_partition) > 1:
-                yield ("MULTIPLE_ORDERS", key, orderitems, transactions)
+                    # TODO: what to do about refund value in this calculation?  This seems wrong.
+                    item_amount = Decimal(orderitem.line_item_unit_price) * int(orderitem.line_item_quantity)
+                    proportion = float(item_amount) / float(trans_balance)
+                    yield ("TRANSACTION_TABLE", self.format_transaction_table_output(code, transaction, orderitem, proportion))
             else:
-                # yield ("MULTIPLE_ORDERITEMS", key, orderitems, transactions)
-                # for now, just get some transactions into the file, independent of the
-                # orderitems involved.
-                code = "MULTIPLE_ORDERITEMS"
-                for transaction in transactions:
-                    yield ("TRANSACTION_TABLE", self.format_transaction_table_output(code, transaction, None))
+                # TODO: distribute transactions to each of the separate orders, and reinvoke
+                # the entire processing.  This should actually be done at the very top of all this.
+                # For now we will just report this case.
+                for orderitem in orderitems:
+                    code = self._get_code_for_nonmatch(orderitem, trans_balance)
+                    # Because the balance doesn't match, we don't
+                    # actually pass a "proportion" value on, but
+                    # rather rely on the error condition to permit
+                    # these to be filtered later.
+                    yield ("TRANSACTION_TABLE", self.format_transaction_table_output(code, transaction, orderitem))
+                order_status = "ORDER_NOT_BALANCED"
+                # order_status = "ORDER_{}_NOT_BALANCED_{}".format(order_balance, trans_balance)
+
+            # TODO: presort orderitems and transactions?
+            # by date, or to put all the payments first and refunds second?
+            # Make a pass over all transactions, and map to orderitems.
+            # QUESTION: can I use the orderitem object as a dict index?  I assume so.
+            # Otherwise I go back to using .line_item_id.
+            orderitem_purchases, orderitem_refunds = self._map_transactions_to_orderitems(orderitems, transactions)
+            
+            # Now just dump them.
+            transaction_total_value = Decimal(0.0)
+            for orderitem_dict in [orderitem_purchases, orderitem_refunds]:
+                for orderitem in orderitem_dict:
+                    trans_list = orderitem_dict[orderitem]
+                    for trans_entry in trans_list:
+                        transaction, value, trans_status = trans_entry
+                        transaction_total_value += value
+                        code = "{}_{}".format(order_status, trans_status)
+                        code = self._add_orderitem_status_to_code(orderitem, code)
+                        yield ("NEW_TABLE", self.format_transaction_table_output(code, transaction, orderitem))
+
+    def _map_transactions_to_orderitems(self, orderitems, transactions):
+        orderitem_purchases = defaultdict(list)
+        orderitem_refunds = defaultdict(list)
+
+        # Sort bills before refunds, and then sort by date within that.
+        sorted_transactions = sorted(transactions, key=lambda x: (-1 if Decimal(x.amount) > 0 else 1, x.date))
+        order_cost = sum([Decimal(orderitem.line_item_price) for orderitem in orderitems])
+        for transaction in sorted_transactions:
+            transaction_amount = Decimal(transaction.amount)
+            # TODO: validation that transaction_amount != 0
+
+            if transaction_amount > 0 and transaction_amount == order_cost:
+                # transaction purchases all orderitems
+                status = 'PURCHASE'
+                for orderitem in orderitems:
+                    orderitem_cost =  Decimal(orderitem.line_item_price)
+                    orderitem_purchases[orderitem].append((transaction, orderitem_cost, status))
+
+            elif transaction_amount > 0:
+                # transaction_amount != order_cost overall, so try to find a particular
+                # orderitem that has not already been paid for.
+                # Not sure that we actually expect to encounter this in our data, however.
+                found = False
+                for orderitem in orderitems:
+                    orderitem_cost =  Decimal(orderitem.line_item_price)
+                    # Purchase an orderitem that has not yet been purchased and matches in cost.
+                    if orderitem not in orderitem_purchases and transaction_amount == orderitem_cost:
+                        orderitem_purchases[orderitem].append((transaction, transaction_amount, 'PURCHASE_ONE'))
+                        found = True
+                        break;
+
+                if not found:
+                    status = 'PURCHASE_ONE_MISCHARGE'
+                    for orderitem in orderitems:
+                        orderitem_cost =  Decimal(orderitem.line_item_price)
+                        # Purchase an orderitem that has not yet been purchased and does not match in cost.
+                        if orderitem not in orderitem_purchases:
+                            orderitem_purchases[orderitem].append((transaction, transaction_amount, status))
+                            found = True
+                            break;
+
+                if not found:
+                    status = 'PURCHASE_ONE_AGAIN'
+                    for orderitem in orderitems:
+                        orderitem_cost =  Decimal(orderitem.line_item_price)
+                        # Purchase an orderitem that has already been purchased and matches in cost.
+                        if transaction_amount == orderitem_cost:
+                            orderitem_purchases[orderitem].append((transaction, transaction_amount, status))
+                            found = True
+                            break;
+
+                if not found:
+                    # We have a payment that doesn't align with one or all.
+                    # It could be for two out of three, for example, but that
+                    # should be rarer.  More likely is an overpayment or underpayment,
+                    # that is a problem that needs to be flagged if it hasn't already
+                    # been addressed.
+                    status = 'PURCHASE_ONE_RANDOM'
+                    orderitem_purchases[orderitems[0]].append((transaction, transaction_amount, status))
+
+            elif transaction_amount < 0 and transaction_amount == order_cost:
+                # transaction refunds all orderitems
+                for orderitem in orderitems:
+                    orderitem_cost =  Decimal(orderitem.line_item_price) * -1
+                    orderitem_refunds[orderitem].append((transaction, orderitem_cost, 'REFUND'))
+            elif transaction_amount < 0:
+                # transaction_amount != order_cost overall, so try to find a particular
+                # orderitem that has been paid for and should be refunded and has not yet been refunded.
+                found = False
+                for orderitem in orderitems:
+                    # Refund an orderitem that has been purchased and matches in cost,
+                    # and is not yet refunded and thinks it should be.  
+                    orderitem_cost =  Decimal(orderitem.line_item_price) * -1
+                    if (transaction_amount == orderitem_cost and
+                        orderitem in orderitem_purchases and
+                        orderitem not in orderitem_refunds and
+                        orderitem.status == 'refunded'
+                    ):
+                        orderitem_refunds[orderitem].append((transaction, orderitem_cost, 'REFUND_ONE'))
+                        found = True
+                        break;
+
+                if not found:
+                    # Refund an orderitem that was purchased and matches in cost that has not been
+                    # refunded, ignoring its status to the contrary.
+                    status = 'REFUND_UNREFUNDED'
+                    for orderitem in orderitems:
+                        orderitem_cost =  Decimal(orderitem.line_item_price) * -1
+                        if (transaction_amount == orderitem_cost and
+                            orderitem in orderitem_purchases and
+                            orderitem not in orderitem_refunds #  and orderitem.status == 'refunded'
+                        ):
+                            orderitem_refunds[orderitem].append((transaction, orderitem_cost, status))
+                            found = True
+                            break;
+
+                if not found:
+                    # Refund an orderitem that was purchased and matches in cost that has already been
+                    # refunded
+                    status = 'REFUND_ONE_AGAIN'
+                    for orderitem in orderitems:
+                        orderitem_cost =  Decimal(orderitem.line_item_price) * -1
+                        if (transaction_amount == orderitem_cost and
+                            orderitem in orderitem_purchases and
+                            orderitem in orderitem_refunds and
+                            orderitem.status == 'refunded'
+                        ):
+                            orderitem_refunds[orderitem].append((transaction, orderitem_cost, status))
+                            found = True
+                            break;
+
+                if not found:
+                    # Refund an orderitem that was purchased and matches in cost that has already been
+                    # refunded, ignoring again its status to the contrary.
+                    status = 'REFUND_UNREFUNDED_AGAIN'
+                    for orderitem in orderitems:
+                        orderitem_cost =  Decimal(orderitem.line_item_price) * -1
+                        if (transaction_amount == orderitem_cost and
+                            orderitem in orderitem_purchases and
+                            orderitem in orderitem_refunds #  and orderitem.status == 'refunded'
+                        ):
+                            orderitem_refunds[orderitem].append((transaction, orderitem_cost, status))
+                            found = True
+                            break;
+
+                if not found:
+                    # What do we do?  Refund one thing at random...
+                    status = 'REFUND_ONE_RANDOMLY'
+                    # Except that we're getting here when we shouldn't!
+                    
+                    orderitem_refunds[orderitems[0]].append((transaction, transaction_amount, status))
+
+            else:
+                pass
+
+        # At this point, we should be done assigning all transactions to orderitems.
+        return orderitem_purchases, orderitem_refunds
 
     def output(self):
         filename = u'reconcile_{reconcile_type}.tsv'.format(reconcile_type="all")
