@@ -124,6 +124,10 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
 
     def mapper(self, line):
         fields = line.split('\t')
+
+        end_date = self.interval.date_b.isoformat()  # pylint: disable=no-member
+        prev_date = (self.interval.date_b - datetime.timedelta(days=1)).isoformat()  # pylint: disable=no-member
+
         # If we put the "payment_ref_id" in the front of all these fields, or
         # at least always in the same index, then we wouldn't this
         # ugly heuristic here.  (It would only need to be in the
@@ -131,6 +135,9 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
         if len(fields) > 11:
             # assume it's an order
             key = fields[-1]
+            # Skip orders that were placed after the interval
+            if fields[13] >= end_date:
+                return
         else:
             # assume it's a transaction
             key = fields[3]
@@ -143,7 +150,13 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
                 if len(key) <= 4 and key not in LOW_ORDER_ID_SHOPPINGCART_ORDERS:
                     key = 'EDX-{}'.format(int(key) + 100000)
 
-        yield key, fields
+            if fields[0] >= end_date:
+                return
+
+            if fields[0] == prev_date and fields[1] == 'cybersource':
+                return
+
+            yield key, fields
 
     def _orderitem_is_professional_ed(self, orderitem):
         return orderitem.order_processor == 'shoppingcart' and orderitem.line_item_product_id in ['2', '3']
