@@ -123,6 +123,12 @@ class CourseEnrollmentEventsPerDayMixin(object):
 
             prev_date = this_date
 
+    def init_local(self):
+        """
+        Empty local initialization method to make this mixin of the same form as other reducer-containing tasks.
+        """
+        return
+
 
 class CourseEnrollmentChangesPerDayMixin(object):
     """Calculates daily changes in enrollment, given per-user net changes by date."""
@@ -162,6 +168,12 @@ class CourseEnrollmentChangesPerDayMixin(object):
         count = sum(int(v) for v in values)
         yield key, count
 
+    def init_local(self):
+        """
+        Empty local initialization method to make this mixin of the same form as other reducer-containing tasks.
+        """
+        return
+
 
 class BaseCourseEnrollmentTaskDownstreamMixin(OverwriteOutputMixin, MapReduceJobTaskMixin):
     """
@@ -178,7 +190,7 @@ class BaseCourseEnrollmentTaskDownstreamMixin(OverwriteOutputMixin, MapReduceJob
       run_date: the date to use as the partition version
     """
     name = luigi.Parameter()
-    src = luigi.Parameter()
+    src = luigi.Parameter(is_list=True)
     dest = luigi.Parameter()
     include = luigi.Parameter(is_list=True, default=('*',))
     manifest = luigi.Parameter(default=None)
@@ -195,7 +207,7 @@ class CourseEnrollmentEventsPerDay(
         MapReduceJobTask):
     """Calculates daily change in enrollment for a user in a course, given raw event log input."""
     # input_format overwrites the default value of none from MapReduceJobTaskMixin
-    input_format = luigi.Parameter(default_from_config={'section': 'manifest', 'name': 'input_format'})
+    input_format = luigi.Parameter(config_path={'section': 'manifest', 'name': 'input_format'})
 
     def requires(self):
         return PathSetTask(self.src, self.include, self.manifest)

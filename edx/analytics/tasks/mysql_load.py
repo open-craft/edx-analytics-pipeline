@@ -26,19 +26,29 @@ except ImportError:
     mysql_client_available = False
 
 
-class MysqlInsertTask(OverwriteOutputMixin, luigi.Task):
+class MysqlInsertTaskMixin(OverwriteOutputMixin):
+    """
+    Parameters for inserting a data set into RDBMS.
+
+        credentials: Path to the external access credentials file.
+        database:  The name of the database to which to write.
+        insert_chunk_size:  The number of rows to insert at a time.
+
+    """
+    database = luigi.Parameter(
+        config_path={'section': 'database-export', 'name': 'database'}
+    )
+    credentials = luigi.Parameter(
+        config_path={'section': 'database-export', 'name': 'credentials'}
+    )
+    insert_chunk_size = luigi.IntParameter(default=100, significant=False)
+
+
+class MysqlInsertTask(MysqlInsertTaskMixin, luigi.Task):
     """
     A task for inserting a data set into RDBMS.
 
     """
-    database = luigi.Parameter(
-        default_from_config={'section': 'database-export', 'name': 'database'}
-    )
-    credentials = luigi.Parameter(
-        default_from_config={'section': 'database-export', 'name': 'credentials'}
-    )
-    insert_chunk_size = luigi.IntParameter(default=100, significant=False)
-
     required_tasks = None
     output_target = None
 
@@ -276,12 +286,16 @@ class MysqlInsertTask(OverwriteOutputMixin, luigi.Task):
                             % (self.columns[0],))
 
         value_list = []
-        for row_count, row in enumerate(self.rows()):
+        row_count = 0
+        for row_count, row in enumerate(self.rows(), start=1):
             entry = tuple([coerce_for_mysql_connect(elem) for elem in row])
             value_list.append(entry)
-            if (row_count + 1) % self.insert_chunk_size == 0:
+            if row_count % self.insert_chunk_size == 0:
                 self._execute_insert_query(cursor, value_list, column_names)
                 value_list = []
+
+        if self.overwrite and row_count == 0:
+            raise Exception('Cannot overwrite a table with an empty result set.')
 
         if len(value_list) > 0:
             self._execute_insert_query(cursor, value_list, column_names)
@@ -304,6 +318,10 @@ class MysqlInsertTask(OverwriteOutputMixin, luigi.Task):
         try:
             # create table only if necessary:
             self.create_table(connection)
+
+            # This prevents gap locks when updating the marker table, enabling us to insert and update records in that
+            # table with impunity from other sessions.
+            connection.cursor().execute("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
 
             self.init_copy(connection)
             cursor = connection.cursor()
@@ -376,3 +394,34 @@ class CredentialFileMysqlTarget(MySqlTarget):
             return super(CredentialFileMysqlTarget, self).exists(connection=connection)
         except ProgrammingError:
             return False
+
+    def create_marker_table(self):
+        """
+        Override the default luigi logic here since we also need an index on target_table to prevent InnoDB from locking
+        every row in the table when we execute a DELETE FROM WHERE target_table="foo". By default it will lock any row
+        that is scanned during the preparation for the DELETE, so we need to have an index on target_table to ensure
+        that other workflows that are being committed can also update the marker table while this transaction is being
+        committed.
+        """
+        connection = self.connect(autocommit=True)
+        cursor = connection.cursor()
+        try:
+            cursor.execute(
+                """ CREATE TABLE IF NOT EXISTS {marker_table} (
+                        id            BIGINT(20)    NOT NULL AUTO_INCREMENT,
+                        update_id     VARCHAR(128)  NOT NULL,
+                        target_table  VARCHAR(128),
+                        inserted      TIMESTAMP DEFAULT NOW(),
+                        PRIMARY KEY (update_id),
+                        KEY id (id),
+                        INDEX target_table (target_table)
+                    )
+                """
+                .format(marker_table=self.marker_table)
+            )
+        except mysql.connector.Error as e:
+            if e.errno == errorcode.ER_TABLE_EXISTS_ERROR:
+                pass
+            else:
+                raise
+        connection.close()
