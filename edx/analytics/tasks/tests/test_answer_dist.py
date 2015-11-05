@@ -1,4 +1,4 @@
-    """
+"""
 Tests for tasks that calculate answer distributions.
 
 """
@@ -251,7 +251,6 @@ class ProblemCheckEventReduceTest(InitializeOpaqueKeysMixin, ProblemCheckEventBa
             "variant": 1,
             "correct": False,
             "problem_id": self.problem_id,
-            "attempt_category": 'last',
         }
         answer_data.update(**kwargs)
         return answer_data
@@ -510,7 +509,6 @@ class AnswerDistributionPerCourseReduceTest(InitializeOpaqueKeysMixin, unittest.
             "input_type": "formulaequationinput",
             "question": u"Enter the number(\u00ba) of fingers on a human hand",
             "response_type": "numericalresponse",
-            "attempt_category": 'last',
         }
         answer_data.update(**kwargs)
         return answer_data
@@ -523,7 +521,6 @@ class AnswerDistributionPerCourseReduceTest(InitializeOpaqueKeysMixin, unittest.
             "variant": "1",
             "correct": False,
             "problem_id": self.problem_id,
-            "attempt_category": 'last',
         }
         answer_data.update(**kwargs)
         return answer_data
