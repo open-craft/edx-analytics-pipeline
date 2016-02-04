@@ -26,6 +26,7 @@ pip-log.txt
 .coverage
 .tox
 nosetests.xml
+unittests.xml
 
 # Translations
 *.mo
@@ -51,3 +52,10 @@ override.cfg
 
 
 .DS_Store
+
+*.trace
+.eggs
+
+*.swp
+catalog_test.json
+course_structure.json

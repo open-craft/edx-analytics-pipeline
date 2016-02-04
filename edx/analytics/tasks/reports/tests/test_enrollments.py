@@ -30,7 +30,7 @@ class TestEnrollmentsByWeek(unittest.TestCase):
 
         # Make offsets None if it was not specified.
         task = EnrollmentsByWeek(name='fake_name',
-                                 src='fake_source',
+                                 src=['fake_source'],
                                  offsets='fake_offsets' if offset else None,
                                  destination='fake_destination',
                                  date=parsed_date,
@@ -43,16 +43,16 @@ class TestEnrollmentsByWeek(unittest.TestCase):
             return textwrap.dedent(string).strip().replace(' ', '\t')
 
         input_targets = {
-            'source': FakeTarget(reformat(source)),
+            'source': FakeTarget(value=reformat(source)),
         }
 
         # Mock offsets only if specified.
         if offset:
-            input_targets.update({'offsets': FakeTarget(reformat(offset))})
+            input_targets.update({'offsets': FakeTarget(value=reformat(offset))})
 
         # Mock statuses only if specified.
         if statuses:
-            input_targets.update({'statuses': FakeTarget(reformat(statuses))})
+            input_targets.update({'statuses': FakeTarget(value=reformat(statuses))})
 
         task.input = MagicMock(return_value=input_targets)
 
@@ -180,7 +180,7 @@ class TestEnrollmentsByWeek(unittest.TestCase):
         date = datetime.date(2013, 01, 20)
 
         task = EnrollmentsByWeek(name='fake_name',
-                                 src='s3://bucket/path/',
+                                 src=['s3://bucket/path/'],
                                  offsets='s3://bucket/file.txt',
                                  destination='file://path/file.txt',
                                  date=date)

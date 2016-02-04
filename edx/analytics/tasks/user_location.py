@@ -27,7 +27,7 @@ class GeolocationMixin(object):
         geolocation_data: a URL to the location of country-level geolocation data.
     """
     geolocation_data = luigi.Parameter(
-        default_from_config={'section': 'geolocation', 'name': 'geolocation_data'}
+        config_path={'section': 'geolocation', 'name': 'geolocation_data'}
     )
 
 
@@ -46,7 +46,7 @@ class BaseUserLocationTask(GeolocationMixin):
 
     """
     name = luigi.Parameter()
-    src = luigi.Parameter()
+    src = luigi.Parameter(is_list=True)
     dest = luigi.Parameter()
     include = luigi.Parameter(is_list=True, default=('*',))
 
@@ -124,7 +124,7 @@ class BaseGeolocation(object):
             code = UNKNOWN_CODE
 
         # Add the username for debugging purposes.  (Not needed for counts.)
-        yield (country, code), username
+        yield (country.encode('utf8'), code.encode('utf8')), username.encode('utf8')
 
     def final_reducer(self):
         """Clean up after the reducer is done."""
@@ -351,7 +351,7 @@ class UsersPerCountryReportWorkflow(MapReduceJobTaskMixin, UsersPerCountryReport
     """
 
     name = luigi.Parameter()
-    src = luigi.Parameter()
+    src = luigi.Parameter(is_list=True)
     include = luigi.Parameter(is_list=True, default=('*',))
     manifest = luigi.Parameter(default=None)
     base_input_format = luigi.Parameter(default=None)

@@ -37,7 +37,7 @@ class LastCountryOfUserMixin(
 
     """
     user_country_output = luigi.Parameter(
-        default_from_config={'section': 'last-country-of-user', 'name': 'user_country_output'}
+        config_path={'section': 'last-country-of-user', 'name': 'user_country_output'}
     )
 
 
@@ -59,7 +59,8 @@ class LastCountryOfUser(LastCountryOfUserMixin, EventLogSelectionMixin, BaseGeol
     def output(self):
         return get_target_from_url(
             url_path_join(
-                self.user_country_output, 'dt={0}/'.format(self.interval.date_b.strftime('%Y-%m-%d'))
+                self.user_country_output,
+                'dt={0}/'.format(self.interval.date_b.strftime('%Y-%m-%d'))  # pylint: disable=no-member
             )
         )
 
@@ -131,9 +132,39 @@ class ImportLastCountryOfUserToHiveTask(LastCountryOfUserMixin, ImportIntoHiveTa
         # Because this data comes from EventLogSelectionDownstreamMixin,
         # we will use the end of the interval used to calculate
         # the country information.
-        return self.interval.date_b.strftime('%Y-%m-%d')
+        return self.interval.date_b.strftime('%Y-%m-%d')  # pylint: disable=no-member
 
     def requires(self):
+        return LastCountryOfUser(
+            mapreduce_engine=self.mapreduce_engine,
+            n_reduce_tasks=self.n_reduce_tasks,
+            source=self.source,
+            interval=self.interval,
+            pattern=self.pattern,
+            geolocation_data=self.geolocation_data,
+            overwrite=self.overwrite,
+            user_country_output=self.user_country_output,
+        )
+
+
+class InsertToMysqlLastCountryOfUserTask(LastCountryOfUserMixin, MysqlInsertTask):
+    """
+    Copy the last_country_of_user table from Hive into MySQL.
+    """
+    @property
+    def table(self):
+        return "last_country_of_user"
+
+    @property
+    def columns(self):
+        return [
+            ('country_name', 'VARCHAR(255)'),
+            ('country_code', 'VARCHAR(10)'),
+            ('username', 'VARCHAR(255)'),
+        ]
+
+    @property
+    def insert_source_task(self):
         return LastCountryOfUser(
             mapreduce_engine=self.mapreduce_engine,
             n_reduce_tasks=self.n_reduce_tasks,
@@ -154,7 +185,7 @@ class QueryLastCountryPerCourseMixin(object):
         course_country_output:  location to write query results.
     """
     course_country_output = luigi.Parameter(
-        default_from_config={'section': 'query-country-per-course', 'name': 'course_country_output'}
+        config_path={'section': 'query-country-per-course', 'name': 'course_country_output'}
     )
 
 
@@ -173,7 +204,8 @@ class QueryLastCountryPerCourseTask(
                 date STRING,
                 course_id STRING,
                 country_code STRING,
-                count INT
+                count INT,
+                cumulative_count INT
             )
             ROW FORMAT DELIMITED FIELDS TERMINATED BY '\t'
             LOCATION '{location}';
@@ -183,11 +215,11 @@ class QueryLastCountryPerCourseTask(
                 sce.dt,
                 sce.course_id,
                 uc.country_code,
+                sum(if(sce.is_active, 1, 0)),
                 count(sce.user_id)
             FROM student_courseenrollment sce
             LEFT OUTER JOIN auth_user au on sce.user_id = au.id
             LEFT OUTER JOIN last_country_of_user uc on au.username = uc.username
-            WHERE sce.is_active > 0
             GROUP BY sce.dt, sce.course_id, uc.country_code;
         """)
 
@@ -235,6 +267,16 @@ class QueryLastCountryPerCourseWorkflow(LastCountryOfUserMixin, QueryLastCountry
                 overwrite=self.overwrite,
                 user_country_output=self.user_country_output,
             ),
+            InsertToMysqlLastCountryOfUserTask(
+                mapreduce_engine=self.mapreduce_engine,
+                n_reduce_tasks=self.n_reduce_tasks,
+                source=self.source,
+                interval=self.interval,
+                pattern=self.pattern,
+                geolocation_data=self.geolocation_data,
+                overwrite=self.overwrite,
+                user_country_output=self.user_country_output,
+            ),
             # We can't make explicit dependencies on this yet, until we
             # solve the multiple-credentials problem, as well as the split-kwargs
             # problem.
@@ -243,7 +285,7 @@ class QueryLastCountryPerCourseWorkflow(LastCountryOfUserMixin, QueryLastCountry
         )
 
 
-class InsertToMysqlCourseEnrollByCountryTaskBase(MysqlInsertTask):
+class InsertToMysqlCourseEnrollByCountryTaskBase(MysqlInsertTask):  # pylint: disable=abstract-method
     """
     Define course_enrollment_location_current table.
     """
@@ -258,13 +300,16 @@ class InsertToMysqlCourseEnrollByCountryTaskBase(MysqlInsertTask):
             ('course_id', 'VARCHAR(255) NOT NULL'),
             ('country_code', 'VARCHAR(10) NOT NULL'),
             ('count', 'INT(11) NOT NULL'),
+            ('cumulative_count', 'INT(11) NOT NULL'),
         ]
 
     @property
     def indexes(self):
         return [
             ('course_id',),
-            ('date', 'course_id'),
+            # Note that the order here is extremely important. The API query pattern needs to filter first by course and
+            # then by date.
+            ('course_id', 'date'),
         ]
 
 

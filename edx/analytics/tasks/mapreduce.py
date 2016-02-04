@@ -8,6 +8,7 @@ from hashlib import md5
 import os
 import StringIO
 import logging
+import logging.config
 
 import luigi
 import luigi.hdfs
@@ -16,20 +17,17 @@ import luigi.task
 from luigi import configuration
 
 from edx.analytics.tasks.url import get_target_from_url, url_path_join
-from edx.analytics.tasks.util.manifest import convert_tasks_to_manifest_if_necessary
+from edx.analytics.tasks.util.manifest import convert_to_manifest_input_if_necessary
 
 
 log = logging.getLogger(__name__)
-
-
-DEFAULT_MARKER_ROOT = 'hdfs:///tmp/marker'
 
 
 class MapReduceJobTaskMixin(object):
     """Defines arguments used by downstream tasks to pass to upstream MapReduceJobTask."""
 
     mapreduce_engine = luigi.Parameter(
-        default_from_config={'section': 'map-reduce', 'name': 'engine'},
+        config_path={'section': 'map-reduce', 'name': 'engine'},
         significant=False
     )
     # TODO: remove these parameters
@@ -40,12 +38,42 @@ class MapReduceJobTaskMixin(object):
     # user should be able to tweak it depending on their particular configuration.
     n_reduce_tasks = luigi.Parameter(default=25, significant=False)
 
+    remote_log_level = luigi.Parameter(
+        config_path={'section': 'map-reduce', 'name': 'remote_log_level'},
+        significant=False
+    )
+
 
 class MapReduceJobTask(MapReduceJobTaskMixin, luigi.hadoop.JobTask):
     """
     Execute a map reduce job.  Typically using Hadoop, but can execute the
     job in process as well.
     """
+
+    def init_hadoop(self):
+        log_format = '%(asctime)s %(levelname)s %(process)d [%(name)s] %(filename)s:%(lineno)d - %(message)s'
+        logging.config.dictConfig(
+            {
+                'version': 1,
+                'disable_existing_loggers': False,
+                'formatters': {
+                    'default': {
+                        'format': log_format,
+                    },
+                },
+                'handlers': {
+                    'stderr': {
+                        'formatter': 'default',
+                        'class': 'logging.StreamHandler',
+                    },
+                },
+                'root': {
+                    'handlers': ['stderr'],
+                    'level': self.remote_log_level.upper(),  # pylint: disable=no-member
+                },
+            }
+        )
+        return super(MapReduceJobTask, self).init_hadoop()
 
     def job_runner(self):
         # Lazily import this since this module will be loaded on hadoop worker nodes however stevedore will not be
@@ -89,8 +117,9 @@ class MapReduceJobTask(MapReduceJobTaskMixin, luigi.hadoop.JobTask):
             'input_format': input_format,
         }
 
-    def requires_hadoop(self):
-        return convert_tasks_to_manifest_if_necessary(self.requires())
+    def input_hadoop(self):
+        manifest_id = str(hash(self)).replace('-', 'n')
+        return convert_to_manifest_input_if_necessary(manifest_id, super(MapReduceJobTask, self).input_hadoop())
 
 
 class MapReduceJobRunner(luigi.hadoop.HadoopJobRunner):
@@ -156,6 +185,15 @@ class EmulatedMapReduceJobRunner(luigi.hadoop.JobRunner):
         map_output = StringIO.StringIO()
         input_targets = luigi.task.flatten(job.input_hadoop())
         for input_target in input_targets:
+            # if file is a directory, then assume that it's Hadoop output,
+            # and actually loop through its contents:
+            if os.path.isdir(input_target.path):
+                filenames = os.listdir(input_target.path)
+                for filename in filenames:
+                    url = url_path_join(input_target.path, filename)
+                    input_targets.append(get_target_from_url(url.strip()))
+                continue
+
             with input_target.open('r') as input_file:
 
                 # S3 files not yet supported since they don't support tell() and seek()
@@ -202,13 +240,17 @@ class MultiOutputMapReduceJobTask(MapReduceJobTask):
     Parameters:
         output_root: a URL location where the split files will be stored.
         delete_output_root: if True, recursively deletes the output_root at task creation.
+        marker:  a URL location to a directory where a marker file will be written on task completion.
     """
     output_root = luigi.Parameter()
     delete_output_root = luigi.BooleanParameter(default=False, significant=False)
+    marker = luigi.Parameter(
+        config_path={'section': 'map-reduce', 'name': 'marker'},
+        significant=False
+    )
 
     def output(self):
-        marker_base_url = configuration.get_config().get('map-reduce', 'marker', DEFAULT_MARKER_ROOT)
-        marker_url = url_path_join(marker_base_url, str(hash(self)))
+        marker_url = url_path_join(self.marker, str(hash(self)))
         return get_target_from_url(marker_url)
 
     def reducer(self, key, values):
@@ -217,6 +259,7 @@ class MultiOutputMapReduceJobTask(MapReduceJobTask):
         """
         output_path = self.output_path_for_key(key)
         if output_path:
+            log.info('Writing output file: %s', output_path)
             output_file_target = get_target_from_url(output_path)
             with output_file_target.open('w') as output_file:
                 self.multi_output_reducer(key, values, output_file)
