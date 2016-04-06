@@ -106,9 +106,6 @@ LOW_ORDER_ID_SHOPPINGCART_ORDERS = (
     '9918',
 )
 
-# Partner short code for edX, used for ShoppingCart orders for organizations that don't appear in the map above.
-EDX_PARTNER_SHORT_CODE = 'edx'
-
 
 class ReconcileOrdersAndTransactionsDownstreamMixin(MapReduceJobTaskMixin):
     """Define parameters needed downstream for running ReconcileOrdersAndTransactionsTask."""
@@ -131,7 +128,8 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
     shoppingcart_partners = luigi.Parameter(
         config_path={'section': 'financial-reports', 'name': 'shoppingcart-partners'},
         description="JSON string containing a dictionary mapping organization IDs of White Label partners "
-        "with data in ShoppingCart to the corresponding Otto partner short code.",
+        "with data in ShoppingCart to the corresponding Otto partner short code.  The short code to be used "
+        "for other organization IDs must be given as value for the key \"DEFAULT\".",
     )
 
     def __init__(self, *args, **kwargs):
@@ -140,6 +138,7 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
             self.shoppingcart_partners_dict = json.loads(self.shoppingcart_partners)
         else:
             self.shoppingcart_partners_dict = {}
+        self.default_partner_short_code = self.shoppingcart_partners_dict.get("DEFAULT")
 
     def requires(self):
         yield (
@@ -216,7 +215,7 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
     def _get_partner(self, course_id):
         """Heuristic to determine the partner short code of order items from ShoppingCart."""
         org = get_org_id_for_course(course_id)
-        return self.shoppingcart_partners_dict.get(org) or EDX_PARTNER_SHORT_CODE
+        return self.shoppingcart_partners_dict.get(org) or self.default_partner_short_code
 
     def _extract_transactions(self, values):
         """
@@ -641,7 +640,7 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
             audit_code[0],
             audit_code[1],
             audit_code[2],
-            orderitem.partner_short_code if orderitem else EDX_PARTNER_SHORT_CODE,
+            orderitem.partner_short_code if orderitem else self.default_partner_short_code,
             orderitem.payment_ref_id if orderitem else transaction.payment_ref_id,
             orderitem.order_id if orderitem else None,
             encode_id(orderitem.order_processor, "order_id", orderitem.order_id) if orderitem else None,
