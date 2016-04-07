@@ -129,7 +129,8 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
         config_path={'section': 'financial-reports', 'name': 'shoppingcart-partners'},
         description="JSON string containing a dictionary mapping organization IDs of White Label partners "
         "with data in ShoppingCart to the corresponding Otto partner short code.  The short code to be used "
-        "for other organization IDs must be given as value for the key \"DEFAULT\".",
+        "for other organization IDs must be given as value for the key \"DEFAULT\", to have a default that "
+        "is not NULL.",
     )
 
     def __init__(self, *args, **kwargs):
@@ -225,12 +226,11 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
         transactions = []
         for (record_type, fields) in values:
             if record_type == 'OrderItemRecord':
-                orderitem = OrderItemRecord(*fields)
-                if not orderitem.partner_short_code:
-                    orderitem = orderitem._replace(  # pylint: disable=no-member,protected-access
-                        partner_short_code=self._get_partner(orderitem.course_id),
+                if not fields[ORDERITEM_FIELD_INDICES['partner_short_code']]:
+                    fields[ORDERITEM_FIELD_INDICES['partner_short_code']] = self._get_partner(
+                        fields[ORDERITEM_FIELD_INDICES['course_id']]
                     )
-                orderitems.append(orderitem)
+                orderitems.append(OrderItemRecord(*fields))
             elif record_type == 'TransactionRecord':
                 transactions.append(TransactionRecord(*fields))
         # Standardize the ordering.

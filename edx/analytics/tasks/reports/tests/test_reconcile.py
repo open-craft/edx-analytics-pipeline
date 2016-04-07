@@ -3,6 +3,7 @@
 from ddt import ddt, data, unpack
 
 from edx.analytics.tasks.tests import unittest
+from edx.analytics.tasks.tests.config import with_luigi_config
 from edx.analytics.tasks.tests.map_reduce_mixins import MapperTestMixin, ReducerTestMixin
 from edx.analytics.tasks.reports.reconcile import (
     ReconcileOrdersAndTransactionsTask,
@@ -240,12 +241,25 @@ class ReconciliationTaskReducerTest(ReconciliationTaskMixin, ReducerTestMixin, u
         ('shoppingcart', 'OpenCraftX/12345/1T2016', '', 'OCX'),
     )
     @unpack
+    @with_luigi_config('financial-reports', 'shoppingcart-partners', '{"OpenCraftX": "OCX", "DEFAULT": "edx"}')
     def test_partner_short_code(self, order_processor, course_id, partner_short_code, expected_short_code):
+        self.create_task()  # Recreate task to pick up overridden Luigi configuration
         orderitem = self.create_orderitem(
             order_processor=order_processor,
             course_id=course_id,
             partner_short_code=partner_short_code,
         )
+        self._check_output([orderitem], {'partner_short_code': expected_short_code})
+
+    @data(
+        ('', None),
+        ('OCX', 'OCX'),
+    )
+    @unpack
+    @with_luigi_config('financial-reports', 'shoppingcart-partners', '{}')
+    def test_partner_short_code_no_default(self, partner_short_code, expected_short_code):
+        self.create_task()  # Recreate task to pick up overridden Luigi configuration
+        orderitem = self.create_orderitem(partner_short_code=partner_short_code)
         self._check_output([orderitem], {'partner_short_code': expected_short_code})
 
     def test_honor_order(self):
