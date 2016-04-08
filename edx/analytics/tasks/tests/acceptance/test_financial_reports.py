@@ -114,6 +114,11 @@ class FinancialReportsAcceptanceTest(AcceptanceTestCase):
         for frame in (data, expected):
             frame.sort(['payment_ref_id', 'transaction_type'], inplace=True, ascending=[True, False])
             frame.reset_index(drop=True, inplace=True)
+        print('----- snip -----')
+        csv_string = StringIO()
+        data.to_csv(csv_string)
+        print(csv_string.get_value())
+        print('----- snip -----')
         try:
             assert_frame_equal(data, expected)
         except AssertionError:
