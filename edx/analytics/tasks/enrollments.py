@@ -109,6 +109,14 @@ class CourseEnrollmentTask(EventLogSelectionMixin, MapReduceJobTask):
         super(CourseEnrollmentTask, self).run()
 
 
+class CourseEnrollmentEventCountTask(CourseEnrollmentTask):
+    def reducer(self, key, values):
+        count = 0
+        for value in values:
+            count += 1
+        yield key, count
+
+
 class EnrollmentEvent(object):
     """The critical information necessary to process the event in the event stream."""
 
