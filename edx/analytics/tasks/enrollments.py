@@ -9,7 +9,7 @@ import luigi.task
 from edx.analytics.tasks.database_imports import ImportAuthUserProfileTask
 from edx.analytics.tasks.mapreduce import MapReduceJobTaskMixin, MapReduceJobTask
 from edx.analytics.tasks.pathutil import EventLogSelectionDownstreamMixin, EventLogSelectionMixin
-from edx.analytics.tasks.url import get_target_from_url, url_path_join
+from edx.analytics.tasks.url import get_target_from_url, url_path_join, ExternalURL
 from edx.analytics.tasks.util import eventlog, opaque_key_util
 from edx.analytics.tasks.util.hive import WarehouseMixin, HiveTableTask, HivePartition, HiveQueryToMysqlTask
 from edx.analytics.tasks.decorators import workflow_entry_point
@@ -19,6 +19,25 @@ log = logging.getLogger(__name__)
 DEACTIVATED = 'edx.course.enrollment.deactivated'
 ACTIVATED = 'edx.course.enrollment.activated'
 MODE_CHANGED = 'edx.course.enrollment.mode_changed'
+
+
+class WordCountTask(MapReduceJobTask):
+    enable_direct_output = True
+
+    source = luigi.Parameter(is_list=True)
+    output_root = luigi.Parameter()
+
+    def requires(self):
+        return [ExternalURL(url) for url in self.source]
+
+    def mapper(self, word):
+        yield word, 1
+
+    def reducer(self, key, values):
+        yield key, sum(values)
+
+    def output(self):
+        return get_target_from_url(self.output_root)
 
 
 class CourseEnrollmentTask(EventLogSelectionMixin, MapReduceJobTask):
