@@ -117,7 +117,7 @@ class FinancialReportsAcceptanceTest(AcceptanceTestCase):
         print('----- snip -----')
         csv_string = StringIO()
         data.to_csv(csv_string)
-        print(csv_string.get_value())
+        print(csv_string.getvalue())
         print('----- snip -----')
         try:
             assert_frame_equal(data, expected)
