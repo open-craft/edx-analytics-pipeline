@@ -16,5 +16,5 @@ CREATE TABLE `partner_partner` (
 -- Dumping data for table `partner_partner`
 --
 INSERT INTO `partner_partner` VALUES
-  (1,'edx','edX','EDX'),
-  (2,'opencraft','OpenCraft','OC');
+  (1,'edx','edX','edx'),
+  (2,'opencraft','OpenCraft','OCX');
