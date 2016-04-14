@@ -134,7 +134,7 @@
 
     - name: virtualenv created
       command: >
-        virtualenv --python={{ virtualenv_python }} {{ working_venv_dir }}
+        virtualenv --python={{ virtualenv_python }} --system-site-packages {{ working_venv_dir }}
 
     - name: update pip
       command: >
