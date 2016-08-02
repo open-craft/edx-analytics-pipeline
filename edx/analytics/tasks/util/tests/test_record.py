@@ -3,10 +3,13 @@
 import datetime
 import pickle
 
-from ddt import data, ddt
+from ddt import data, ddt, unpack
 
 from edx.analytics.tasks.tests import unittest
-from edx.analytics.tasks.util.record import Record, StringField, IntegerField, DateField, FloatField
+from edx.analytics.tasks.util.record import (
+    Record, StringField, IntegerField, DateField, DateTimeField, FloatField, StringListField, BooleanField,
+    DEFAULT_NULL_VALUE,
+)
 
 UNICODE_STRING = u'\u0669(\u0361\u0e4f\u032f\u0361\u0e4f)\u06f6'
 UTF8_BYTE_STRING = UNICODE_STRING.encode('utf8')
@@ -178,6 +181,29 @@ class RecordTestCase(unittest.TestCase):
                 ('index', 'INT'),
                 ('date', 'STRING')
             ]
+        )
+
+    def test_elasticsearch_properties(self):
+        self.assertEqual(
+            SampleElasticSearchStruct.get_elasticsearch_properties(),
+            {
+                'name': {
+                    'type': 'string',
+                    'index': 'not_analyzed',
+                },
+                'index': {
+                    'type': 'integer',
+                },
+                'date': {
+                    'type': 'date',
+                    'index': 'not_analyzed',
+                },
+                'dateTime': {
+                    'type': 'date',
+                    'index': 'not_analyzed',
+                    'format': 'strict_date_time_no_millis',
+                },
+            }
         )
 
     def test_from_tsv_nulls(self):
@@ -380,6 +406,14 @@ class SampleStruct(Record):
     date = DateField()
 
 
+class SampleElasticSearchStruct(Record):
+    """A record with a variety of field types to illustrate all elasticsearch properties"""
+    name = StringField()
+    index = IntegerField(analyzed=True)
+    date = DateField()
+    dateTime = DateTimeField()
+
+
 @ddt
 class StringFieldTest(unittest.TestCase):
     """Tests for StringField"""
@@ -451,6 +485,148 @@ class StringFieldTest(unittest.TestCase):
 
 
 @ddt
+class StringListFieldTest(unittest.TestCase):
+    """Tests for StringListField"""
+
+    @data(
+        # String values
+        ('abc', 'abc'),
+        ('', ''),
+        # List values
+        (['a', 'b', 'c'], 'a\0b\0c'),
+        (('a', 'b', 'c'), 'a\0b\0c'),
+        ([], ''),
+        ((), ''),
+        # Null value (nullable=True by default)
+        (None, DEFAULT_NULL_VALUE),
+    )
+    @unpack
+    def test_serialize(self, value, expected_value):
+        test_record = StringListField()
+        self.assertEquals(test_record.serialize_to_string(value), expected_value)
+
+    @data(
+        # String values
+        ('abc', ['abc']),
+        ('', ['']),
+        # List values
+        ('a\0b\0c', ['a', 'b', 'c']),
+        ('', ['']),
+        # Null values (nullable=True by default)
+        (DEFAULT_NULL_VALUE, None),
+    )
+    @unpack
+    def test_deserialize(self, value, expected_value):
+        test_record = StringListField()
+        self.assertEquals(test_record.deserialize_from_string(value), expected_value)
+
+    @data(
+        (DEFAULT_NULL_VALUE, True),
+        ('None', False),  # None is just string if nullable=False
+    )
+    @unpack
+    def test_serialize_nullable(self, expected_str, nullable):
+        test_record = StringListField(nullable=nullable)
+        self.assertEquals(test_record.serialize_to_string(None), expected_str)
+
+    @data(
+        (None, True),
+        (['\\N'], False),  # '\\N' is just a string if nullable=False
+    )
+    @unpack
+    def test_deserialize_nullable(self, expected_value, nullable):
+        test_record = StringListField(nullable=nullable)
+        self.assertEquals(test_record.deserialize_from_string(DEFAULT_NULL_VALUE), expected_value)
+
+    def test_sql_type(self):
+        self.assertEqual(StringListField().sql_type, 'VARCHAR')
+
+    def test_hive_type(self):
+        self.assertEqual(StringListField().hive_type, 'STRING')
+
+    def test_elasticsearch_type(self):
+        self.assertEqual(StringListField().elasticsearch_type, 'string')
+
+    def test_delimiter(self):
+        self.assertEqual(StringListField().delimiter, '\0')
+
+
+@ddt
+class BooleanFieldTest(unittest.TestCase):
+    """Tests for BooleanField"""
+
+    @data(
+        # True values
+        (-1, 'True'),
+        (1, 'True'),
+        (10, 'True'),
+        (True, 'True'),
+        ('True', 'True'),
+        ('abc', 'True'),
+        (['a'], 'True'),
+        ({'a': 1}, 'True'),
+        ('False', 'True'),
+        ('None', 'True'),
+        # False values
+        (0, 'False'),
+        (False, 'False'),
+        ('', 'False'),
+        ([], 'False'),
+        ({}, 'False'),
+        # Null value (nullable=True by default)
+        (None, DEFAULT_NULL_VALUE),
+    )
+    @unpack
+    def test_serialize(self, value, expected_value):
+        test_record = BooleanField()
+        self.assertEquals(test_record.serialize_to_string(value), expected_value)
+
+    @data(
+        # True values
+        ('True', True),
+        ('random', True),
+        (1, True),
+        ('False', True),
+        # False values
+        ('', False),
+        (0, False),
+        # Null values (nullable=True by default)
+        (DEFAULT_NULL_VALUE, None),
+    )
+    @unpack
+    def test_deserialize(self, value, expected_value):
+        test_record = BooleanField()
+        self.assertEquals(test_record.deserialize_from_string(value), expected_value)
+
+    @data(
+        (DEFAULT_NULL_VALUE, True),
+        ('False', False),  # None is just false if nullable=False
+    )
+    @unpack
+    def test_serialize_nullable(self, expected_str, nullable):
+        test_record = BooleanField(nullable=nullable)
+        self.assertEquals(test_record.serialize_to_string(None), expected_str)
+
+    @data(
+        (None, True),
+        (True, False),  # '\\N' is just a string if nullable=False
+    )
+    @unpack
+    def test_deserialize_nullable(self, expected_value, nullable):
+        test_record = BooleanField(nullable=nullable)
+        self.assertEquals(test_record.deserialize_from_string(DEFAULT_NULL_VALUE), expected_value)
+
+    def test_sql_type(self):
+        self.assertEqual(BooleanField().sql_type, 'BOOLEAN')
+
+    def test_hive_type(self):
+        self.assertEqual(BooleanField().hive_type, 'BOOLEAN')
+
+    def test_elasticsearch_type(self):
+        self.assertEqual(BooleanField().elasticsearch_type, 'boolean')
+
+
+@ddt
 class IntegerFieldTest(unittest.TestCase):
     """Tests for IntegerField"""
 
@@ -511,6 +687,52 @@ class DateFieldTest(unittest.TestCase):
 
     def test_serialize_to_string(self):
         self.assertEqual(DateField().serialize_to_string(datetime.date(2015, 11, 1)), '2015-11-01')
+
+
+@ddt
+class DateTimeFieldTest(unittest.TestCase):
+    """Tests for DateTimeField"""
+
+    @data(
+        datetime.datetime.now(),
+        datetime.datetime.now().strftime(DateTimeField.string_format),
+        None
+    )
+    def test_validate_success(self, value):
+        test_record = DateTimeField()
+        self.assertEqual(len(test_record.validate(value)), 0)
+
+    @data(
+        0,
+        False,
+        1.0,
+        '2015-11-01',
+        '2015-11-01 10:10',
+        object()
+    )
+    def test_validate_error(self, value):
+        test_record = DateTimeField()
+        self.assertEqual(len(test_record.validate(value)), 1)
+
+    def test_sql_type(self):
+        self.assertEqual(DateTimeField().sql_type, 'DATETIME')
+
+    def test_hive_type(self):
+        self.assertEqual(DateTimeField().hive_type, 'STRING')
+
+    def test_elasticsearch_type(self):
+        self.assertEqual(DateTimeField().elasticsearch_type, 'date')
+
+    def test_elasticsearch_format(self):
+        self.assertEqual(DateTimeField().elasticsearch_format, 'strict_date_time_no_millis')
+
+    def test_deserialize_from_string(self):
+        self.assertEqual(DateTimeField().deserialize_from_string('2015-11-01T00:00:00.0'),
+                         datetime.datetime(2015, 11, 1))
+
+    def test_serialize_to_string(self):
+        self.assertEqual(DateTimeField().serialize_to_string(datetime.datetime(2015, 11, 1)),
+                         '2015-11-01T00:00:00.000000')
 
 
 @ddt
