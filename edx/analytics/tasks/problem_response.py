@@ -505,7 +505,7 @@ class ProblemResponseReportWorkflow(ProblemResponseTableMixin,
     Workflow task that generates the problem response reports from the hive table.
     """
     output_root = luigi.Parameter(
-        config_path={'section': 'problem_response', 'name': 'report_output_root'},
+        config_path={'section': 'problem-response', 'name': 'report_output_root'},
         description='Location where the report files will be stored.',
     )
     marker = luigi.Parameter(
