@@ -130,7 +130,8 @@ class ProblemResponseDataMixin(object):
         Extra modules needed by the hadoop cluster when processing tracking logs.
         """
         import html5lib
-        return [html5lib, ]
+        import six
+        return [html5lib, six]
 
 
 class LatestProblemResponseDataTask(EventLogSelectionMixin,
