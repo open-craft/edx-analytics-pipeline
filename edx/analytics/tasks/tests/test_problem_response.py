@@ -12,7 +12,7 @@ from ddt import ddt, data, unpack
 
 from edx.analytics.tasks.problem_response import (
     ProblemResponseRecord, LatestProblemResponseDataTask, LatestProblemResponseTableTask,
-    ProblemResponseReportTask,
+    ProblemResponseReportTask, LatestProblemResponsePartitionTask,
 )
 from edx.analytics.tasks.util.record import DateTimeField
 from edx.analytics.tasks.tests import unittest
@@ -272,7 +272,7 @@ class LatestProblemResponseTaskReducerTest(InitializeOpaqueKeysMixin, ReducerTes
         )
         # randomize the inputs, because their order shouldn't matter.
         random.shuffle(inputs)
-        return (inputs, (expected.to_key_value_tuples(),))
+        return (inputs, (expected.to_string_tuple(),))
 
     def test_no_events(self):
         self.assert_no_output([])
@@ -304,20 +304,11 @@ class LatestProblemResponseTableTaskTest(ReducerTestMixin, unittest.TestCase):
     """Test the properties of the LatestProblemResponseTableTask."""
     task_class = LatestProblemResponseTableTask
 
-    DATE = '2013-12-17'
-
     def setUp(self):
-        self.task = self.task_class(  # pylint: disable=not-callable
-            interval_start=luigi.DateParameter().parse(self.DATE),
-        )
-
-    def test_interval(self):
-        today = datetime.utcnow().date()
-        self.assertEquals(self.task.interval,
-                          luigi.date_interval.Custom.parse('{}-{}'.format(self.DATE, today)))
+        self.task = self.task_class()  # pylint: disable=not-callable
 
     def test_partition_by(self):
-        self.assertEquals(self.task.partition_by, None)
+        self.assertEquals(self.task.partition_by, 'courseid_dt')
 
     def test_table_name(self):
         self.assertEquals(self.task.table, 'problem_response_latest')
@@ -558,3 +549,39 @@ class ProblemResponseReportTaskReducerTest(ReducerTestMixin, ProblemResponseRepo
         record = test_record_class(list_field=['a', 'b'])
         self.assertEquals(self.task._record_to_string_dict(record),  # pylint: disable=protected-access
                           dict(list_field="['a', 'b']"))
+
+
+class LatestProblemResponsePartitionTaskTest(unittest.TestCase):
+    """Tests the LatestProblemResponsePartitionTask's formatted partition value."""
+
+    course_id = 'course-v1:edX+DemoX+Demo_Course'
+    filename_safe_course_id = 'edX_DemoX_Demo_Course'
+    timestamp = datetime.utcnow()
+
+    # Only testing to a minute's precision due to issues with interval string parsing, as noted
+    # in partition_format parameter description.
+    partition_format = '{course_id}_%Y%m%dT%H%M'
+
+    def assert_partition_value(self):
+        """Ensure that datetimes are not filtered down to dates alone, when determining partition value."""
+        datetime_format = self.timestamp.strftime(self.partition_format)
+        expected_partition_value = datetime_format.format(course_id=self.filename_safe_course_id)
+        self.assertEquals(self.task.partition_value, expected_partition_value)
+
+    def test_partition_value_with_start_end(self):
+        self.task = LatestProblemResponsePartitionTask(
+            course_id=self.course_id,
+            interval_start='2013-05-30',
+            interval_end=self.timestamp,
+            partition_format=self.partition_format,
+        )
+        self.assert_partition_value()
+
+    def test_partition_value_with_interval(self):
+        interval = luigi.date_interval.Custom.parse('2013-05-30-{}'.format(self.timestamp.isoformat()))
+        self.task = LatestProblemResponsePartitionTask(
+            course_id=self.course_id,
+            interval=interval,
+            partition_format=self.partition_format,
+        )
+        self.assert_partition_value()

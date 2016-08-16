@@ -5,7 +5,7 @@ import re
 import csv
 import ast
 import json
-from datetime import datetime
+import datetime
 import logging
 import luigi
 
@@ -14,12 +14,14 @@ from edx.analytics.tasks.pathutil import EventLogSelectionDownstreamMixin, Event
 from edx.analytics.tasks.url import get_target_from_url, url_path_join
 from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
 from edx.analytics.tasks.decorators import workflow_entry_point
-from edx.analytics.tasks.util.hive import BareHiveTableTask
+from edx.analytics.tasks.util.hive import BareHiveTableTask, HivePartitionTask
 from edx.analytics.tasks.util.opaque_key_util import get_filename_safe_course_id
 from edx.analytics.tasks.util.record import (
     Record, StringField, StringListField, IntegerField, DateTimeField, FloatField, BooleanField,
 )
-
+from edx.analytics.tasks.course_blocks import (
+    CourseIdTimestampPartitionMixin,
+)
 from edx.analytics.tasks.answer_dist import ProblemCheckEventMixin, get_problem_check_event
 
 log = logging.getLogger(__name__)
@@ -30,6 +32,8 @@ class ProblemResponseRecord(Record):
     Record containing the data for a single user's response to a problem, in a given date range.
 
     If there are multiple questions in a problem, they are spread over separate ProblemResponseRecords.
+
+    Note that the course_id field is available from the partition string.
     """
     # Fields that provide the unique key for each record
     course_id = StringField(description='Course containing the problem.')
@@ -50,18 +54,9 @@ class ProblemResponseRecord(Record):
     first_attempt_date = DateTimeField(description='date/time of the first attempt the user has made on the problem.')
     last_attempt_date = DateTimeField(description='date/time of the last attempt the user has made on the problem.')
 
-    def to_key_value_tuples(self, num_keys=2):
-        """
-        Return two string tuples:
-            * first "num_key" field values
-            * the remaining field values
-        """
-        string_tuple = self.to_string_tuple()
-        return (string_tuple[:num_keys],
-                string_tuple[num_keys:])
 
-
-class ProblemResponseTableMixin(EventLogSelectionDownstreamMixin,
+class ProblemResponseTableMixin(CourseIdTimestampPartitionMixin,
+                                EventLogSelectionDownstreamMixin,
                                 MapReduceJobTaskMixin):
     """
     Common parameters passed through the problem response workflow.
@@ -76,30 +71,52 @@ class ProblemResponseTableMixin(EventLogSelectionDownstreamMixin,
     # Define optional parameters, to be used if 'interval' is not defined.
     interval_start = luigi.DateParameter(
         config_path={'section': 'problem_response', 'name': 'interval_start'},
+        default=datetime.date(2013, 5, 30),
         significant=False,
         description='The start date to export logs for.  Ignored if `interval` is provided.',
     )
     interval_end = luigi.DateParameter(
-        default=datetime.utcnow().date(),
+        default=datetime.datetime.utcnow(),
         significant=False,
         description='The end date to export logs for.  Ignored if `interval` is provided. '
-        'Default is today, UTC.',
+        'Default is now, UTC.',
+    )
+
+    # Override this parameter so we can change the config_path and default value.
+    partition_format = luigi.Parameter(
+        config_path={'section': 'problem_response', 'name': 'partition_format'},
+        default='%Y%m%dT%H',
+        description="Datetime format string for the table partition, which is applied to the configured course_id "
+                    "and interval end parameters.  Must result in a filename-safe string, or your partitions will "
+                    "fail to be created.  It results in a combined partition containing: \n"
+                    "* {course_id}: a filename-safe version of the configured course_id\n"
+                    "* datetime format string:  Adjust this portion to update the data more or less frequently.\n"
+                    "  The default value of '%Y%m%dT%H' changes hourly, and so allows the data to update hourly.\n"
+                    "NB: Using time-based format strings with an interval string parameter (as opposed to setting "
+                    "interval_start and interval_end) is not recommended, as the interval parsing logic can result "
+                    "in an altered timestamp."
+
     )
 
     def __init__(self, *args, **kwargs):
         super(ProblemResponseTableMixin, self).__init__(*args, **kwargs)
-
         if not self.interval:
             self.interval = luigi.date_interval.Custom(self.interval_start, self.interval_end)
+        # Use the end of the interval as the partition date
+        self.date = self.interval.date_b
 
 
-class LatestProblemResponseTableTask(ProblemResponseTableMixin,
-                                     BareHiveTableTask):
+class LatestProblemResponseTableTask(BareHiveTableTask):
     """
-    A hive table containing the latest problem response data.
+    A hive table containing the latest problem response data, partitioned on a course_id and datetime.
     """
-    partition_by = None
-    table = 'problem_response_latest'
+    @property
+    def partition_by(self):
+        return 'courseid_dt'
+
+    @property
+    def table(self):
+        return 'problem_response_latest'
 
     @property
     def columns(self):
@@ -110,14 +127,29 @@ class LatestProblemResponseTableTask(ProblemResponseTableMixin,
         """Use the table location path for the output root."""
         return self.table_location
 
-    def requires(self):
+    def output(self):
+        return get_target_from_url(self.output_root)
+
+
+class LatestProblemResponsePartitionTask(ProblemResponseTableMixin, HivePartitionTask):
+    """The hive partition for this interval's problem response data."""
+
+    @property
+    def hive_table_task(self):
+        return LatestProblemResponseTableTask(
+            warehouse_path=self.warehouse_path,
+            overwrite=self.overwrite,
+        )
+
+    @property
+    def data_task(self):
         return LatestProblemResponseDataTask(
-            n_reduce_tasks=self.n_reduce_tasks,
             source=self.source,
-            interval=self.interval,
             pattern=self.pattern,
-            output_root=self.output_root,
-            overwrite=self.overwrite
+            interval=self.interval,
+            output_root=self.partition_location,
+            overwrite=self.overwrite,
+            n_reduce_tasks=self.n_reduce_tasks,
         )
 
 
@@ -269,7 +301,7 @@ class LatestProblemResponseDataTask(EventLogSelectionMixin,
                 last_attempt_date=last_attempt_date
             )
 
-            yield latest_response_record.to_key_value_tuples()
+            yield latest_response_record.to_string_tuple()
 
     def _clean_string(self, string):
         """Remove unwanted characters from the given string or list of strings."""
@@ -484,7 +516,7 @@ class ProblemResponseReportTask(ProblemResponseDataMixin,
             value = getattr(record, field_name, None)
 
             # Format datetime fields if configured
-            if isinstance(value, datetime):
+            if isinstance(value, datetime.datetime):
                 if self.report_field_datetime_format is not None:
                     value = value.strftime(self.report_field_datetime_format)
 
@@ -532,8 +564,8 @@ class ProblemResponseReportWorkflow(ProblemResponseTableMixin,
             remote_log_level=self.remote_log_level,
         )
 
-        # Initialize table task
-        latest_table_task = LatestProblemResponseTableTask(
+        # Initialize problem response partition task
+        latest_table_task = LatestProblemResponsePartitionTask(
             overwrite=self.hive_overwrite,
             interval=self.interval,
             interval_start=self.interval_start,
