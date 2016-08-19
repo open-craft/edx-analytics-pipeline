@@ -386,7 +386,7 @@ class LoadCourseBlocksTask(WarehouseMixin, OverwriteOutputMixin, MapReduceJobTas
     )
     course_id_index = luigi.IntParameter(
         config_path={'section': 'course-blocks', 'name': 'course_id_index'},
-        significant=False,
+        default=0,
         description='Index of the course_id field in the given input_root records.  Tab-separated hive records are '
                     'read raw from the given input_root, and parsed into tuples.  This field indicates which item '
                     'in the tuple contains the course_id.',
