@@ -7,6 +7,7 @@ import logging
 import json
 import luigi
 from requests import RequestException
+from slumber.exceptions import HttpNotFoundError
 
 from edx_rest_api_client.client import EdxRestApiClient
 from edx.analytics.tasks.pathutil import PathSetTask
@@ -102,6 +103,13 @@ class EdxRestApiTask(PathSetTask):
         default=60,
         config_path={'section': 'edx-rest-api', 'name': 'timeout'},
         description='Number of seconds to wait before timing out from a REST API call.'
+    )
+    raise_exceptions = luigi.BooleanParameter(
+        default=True,
+        significant=False,
+        config_path={'section': 'edx-rest-api', 'name': 'raise_exceptions'},
+        description='If True, then re-raise 404 and 400 exceptions raised by REST API.'
+                    'If False, then catch and log them, but do not re-raise.'
     )
     pagination_key = luigi.Parameter(
         config_path={'section': 'edx-rest-api', 'name': 'pagination_key'},
@@ -214,7 +222,18 @@ class EdxRestApiTask(PathSetTask):
                 # Get the API resource
                 api_call = getattr(client, self.resource)
                 arguments['page'] = page
-                response = api_call.get(**arguments)
+                try:
+                    response = api_call.get(**arguments)
+                except HttpNotFoundError as exc:
+                    message = 'Error fetching API resource {}/{}: {}'.format(
+                                self.resource, arguments, exc)
+                    log.error(message)
+                    # If configured to raise exceptions, raise one.
+                    if self.raise_exceptions:
+                        raise EdxRestApiTaskException(exc, message)
+                    else:
+                        # Write an empty file placeholder
+                        response = message
 
                 # Serialize response object to a JSON string, and write to file
                 log.debug("writing cache file %s", output_target.path)
