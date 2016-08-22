@@ -85,8 +85,7 @@ class CourseIdTimestampPartitionMixin(TimestampPartitionMixin):
         datetime_format = super(CourseIdTimestampPartitionMixin, self).partition_value
 
         # then apply the course_id
-        return unicode(datetime_format.format(course_id=self.course_id))
-        #FIXME return unicode(datetime_format.format(course_id=get_filename_safe_course_id(self.course_id)))
+        return unicode(datetime_format.format(course_id=get_filename_safe_course_id(self.course_id)))
 
 
 class CourseBlocksDownstreamMixin(CourseIdTimestampPartitionMixin, WarehouseMixin, MapReduceJobTaskMixin):
@@ -345,6 +344,9 @@ class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, HivePartitionTask):
         """Expose the partition location path as the output root."""
         return self.partition_location
 
+    def output(self):
+        return get_target_from_url(self.output_root)
+
     @property
     def hive_table_task(self):
         return CourseBlocksTableTask(
@@ -364,22 +366,29 @@ class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, HivePartitionTask):
 
 class LoadCourseBlocksTask(WarehouseMixin, OverwriteOutputMixin, MapReduceJobTaskMixin, luigi.Task):
     """
-    Runs the `input_task', then reads the `course_id` field out of the hive records in `input_task.output_root`, and
-    spawns a CourseBlocksPartitionTask for each course found.
+    Reads the `course_id` field out of the hive records in `input_task.output_root`, and spawns a
+    CourseBlocksPartitionTask for each course found.  
 
-    Because this task needs to spawn new luigi tasks, it has to to do so in the requires() method.  This means we
-    can't take advantage of the uniqueness and sorting filters of map/reduce.
+    We accomplish this by making the `input_task` a required task for LoadCourseBlocksTask.  Once `input_task` is
+    complete, then require a CourseBlocksPartitionTask for each course read from the `input_task.output_root`.
+    Because `input_task` is a luigi.Task instance, this task cannot be called from the command line, and must be invoked
+    via a workflow task like LoadAllCourseBlocksWorkflow.
 
     This task writes a `marker` file on successful completion, with its name hashed to include this task's current
-    parameters.  If the `marker` file exists, then the task won't re-process the data produced by `input_task`.
-
+    parameters.  If the `marker` file exists, then the task won't re-process the data in `input_task`.
     """
-    input_task = luigi.Parameter(
-        description='Task which will produce the list of courses whose blocks need to be loaded.  Will be run by '
-                    'this task\'s run() method.'
-    )
     date = luigi.DateParameter(
         description='Upper bound date/time for the generated course blocks partitions.'
+    )
+    input_task = luigi.Parameter(
+        description='Luigi task whose hive output contains a list of courses with course_blocks we want to read.'
+    )
+    course_id_index = luigi.IntParameter(
+        config_path={'section': 'course-blocks', 'name': 'course_id_index'},
+        default=0,
+        description='Index of the course_id field in records contained in input_task.output_root.  Tab-separated hive '
+                    'records are read raw from the input_task.output_root, and parsed into tuples.  This field '
+                    'indicates which item in the tuple contains the course_id.',
     )
     marker = luigi.Parameter(
         config_path={'section': 'course-blocks', 'name': 'load_blocks_marker'},
@@ -387,99 +396,104 @@ class LoadCourseBlocksTask(WarehouseMixin, OverwriteOutputMixin, MapReduceJobTas
         description='URL directory where marker files will be written on task completion.'
                     ' Note that the report task will not run if this marker file exists.',
     )
-    course_id_index = luigi.IntParameter(
-        config_path={'section': 'course-blocks', 'name': 'course_id_index'},
-        default=0,
-        description='Index of the course_id field in the given input_task.output_root records.  Tab-separated hive '
-                    'records are read raw from the given input_task.output_root, and parsed into tuples.  This field '
-                    'indicates which item in the tuple contains the course_id.',
-    )
 
     def __init__(self, *args, **kwargs):
         super(LoadCourseBlocksTask, self).__init__(*args, **kwargs)
         marker_url = url_path_join(self.marker, str(hash(self)))
         self.marker_target = get_target_from_url(marker_url)
+        self.requirements = None
 
     def requires(self):
-        # Input task must be run first
-        log.error("** LoadCourseBlocksTask.requires")
-        return self.input_task
+        """
+        Generates the list of tasks required to load the course blocks from the courses output by the input_task.
+
+        Note:  Because we use an outdated luigi library, we are unable to take advantage of the dynamic dependencies
+        feature which has been available since v1.2.1:
+
+            https://github.com/spotify/luigi/blob/master/doc/tasks.rst#dynamic-dependencies
+
+        So we have to trick luigi into allowing us to have dynamic dependencies by changing what this requires()
+        function returns when the `input_task.output_root` is ready.  The luigi.worker throws and catches a
+        RuntimeError: "Unfulfilled dependencies at run time" exception once, but then re-schedules this task to 
+        finish executing the dependent tasks.
+
+        1. The first time requires() is called, and until `input_task` is complete, it yields the `input_task`.
+        2. The next time requires() is called, it loads the list of courses from `input_task.output_root`, and yields a
+           CourseBlocksPartitionTask for each unique course_id.  These requirements are cached, so the output doesn't
+           get re-read.
+        3. Any subsequent calls to requires() yields the cached CourseBlocksPartitionTask requirements.
+        """
+        if not self.input_task.complete():
+            log.debug('LoadCourseBlocksTask requires input_task %s', self.input_task)
+            yield self.input_task
+
+        elif self.requirements is not None:
+            # If we've stored the requirements list from below, then it's ok to return it as-is.
+            log.debug('LoadCourseBlocksTask using cached requirements')
+            yield self.requirements
+
+        else:
+            log.debug('LoadCourseBlocksTask loading requirements from input_task.output_root')
+            loaded_courses = dict()
+            input_target = get_target_from_url(self.input_task.output_root)
+            for line in input_target.open('r'):
+
+                # Each line is from a hive table, so it's tab-separated
+                record = tuple(line.rstrip('\r\n').split('\t'))
+
+                # If the record contains a potentially valid course_id,
+                # create a task to load its course blocks.
+                if len(record) > self.course_id_index:
+
+                    course_id = record[self.course_id_index]
+                    if course_id != DEFAULT_NULL_VALUE and course_id not in loaded_courses:
+
+                        blocks_task = CourseBlocksPartitionTask(
+                            course_id=course_id,
+                            date=self.date,
+                            mapreduce_engine=self.mapreduce_engine,
+                            input_format=self.input_format,
+                            lib_jar=self.lib_jar,
+                            n_reduce_tasks=self.n_reduce_tasks,
+                            remote_log_level=self.remote_log_level,
+                            warehouse_path=self.warehouse_path,
+                        )
+
+                        loaded_courses[course_id] = blocks_task
+                        yield blocks_task
+
+                self.requirements = loaded_courses.values()
 
     def complete(self):
         """
         The current task is complete if no overwrite was requested,
         and the marker file is present.
         """
-        log.error("** LoadCourseBlocksTask.complete ")
         if super(LoadCourseBlocksTask, self).complete():
-            log.error("** LoadCourseBlocksTask.complete : super true, this %s" % self.output().exists())
-            return self.output().exists()
-        log.error("** LoadCourseBlocksTask.complete super False")
+            return self.marker_target.exists()
         return False
 
     def output(self):
         """
         Use the marker location as an indicator of task "completeness".
         """
-        log.error("** LoadCourseBlocksTask.output : %s" % self.marker_target)
         return self.marker_target
-
-    '''
-    def on_success(self):
-        """
-        Required tasks ran successfully, so write the marker file.
-        """
-        with self.output().open('w') as marker_file:
-            log.error("** LoadCourseBlocksTask.success, writing %s" % self.output())
-            marker_file.write('done')
-    '''
 
     def run(self):
         """
         Clear out marker file if overwrite requested.
         """
-        log.error("** LoadCourseBlocksTask.run removing %s" % self.output())
-        self.remove_output_on_overwrite()
-
-        """
-        Parse the hive files in input_task.output_root to collect course_id values, and create CourseBlockPartitionTasks
-        to load the course blocks for that course.
-        #FIXME def _get_requirements(self):
-        """
-        loaded_courses = dict()
-        input_target = get_target_from_url(self.input_task.output_root)
-        for line in input_target.open('r'):
-
-            # Each line is from a hive table, so it's tab-separated
-            record = tuple(line.rstrip('\r\n').split('\t'))
-
-            # If the record contains a potentially valid course_id,
-            # create a task to load its course blocks.
-            if len(record) > self.course_id_index:
-
-                course_id = record[self.course_id_index]
-                if course_id != DEFAULT_NULL_VALUE and course_id not in loaded_courses:
-
-                    blocks_task = CourseBlocksPartitionTask(
-                        course_id=course_id,
-                        date=self.date,
-                        mapreduce_engine=self.mapreduce_engine,
-                        input_format=self.input_format,
-                        lib_jar=self.lib_jar,
-                        n_reduce_tasks=self.n_reduce_tasks,
-                        remote_log_level=self.remote_log_level,
-                        warehouse_path=self.warehouse_path,
-                    )
-
-                    log.error("** LoadCourseBlocksTask.yielding %s" % blocks_task)
-                    yield blocks_task
-                    loaded_courses[course_id] = blocks_task
-
-        with self.output().open('w') as marker_file:
-            log.error("** LoadCourseBlocksTask.success, writing %s" % self.output())
-            marker_file.write('done')
+        if not self.complete():
+            self.remove_output_on_overwrite()
 
         super(LoadCourseBlocksTask, self).run()
+
+    def on_success(self):
+        """
+        Required tasks ran successfully, so write the marker file.
+        """
+        with self.marker_target.open('w') as marker_file:
+            marker_file.write(str(self.requirements))
 
 
 @workflow_entry_point
@@ -528,14 +542,12 @@ class LoadAllCourseBlocksWorkflow(WarehouseMixin, MapReduceJobTaskMixin, luigi.W
         )
 
         # Initialize the all course blocks data task, feeding
-        # the output from the course_list_task in as input.
+        # the course_list_task in as an input task.
         all_course_blocks_task = LoadCourseBlocksTask(
             input_task=course_list_task,
             **kwargs
         )
 
-        # Order is important here, and unintuitive:
-        #  course_blocks depends on course_list, yet it goes last.
-        yield (
-            all_course_blocks_task,
-        )
+        # Here, we yield only the course_blocks task, because it includes course_list task as a required task.
+        # See LoadCourseBlocksTask.requires() for details.
+        yield all_course_blocks_task

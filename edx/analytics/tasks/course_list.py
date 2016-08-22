@@ -150,24 +150,25 @@ class CourseListApiDataTask(CourseListDownstreamMixin, OverwriteOutputMixin, Map
 
         # Note that there should only ever by one record in the values list,
         # since the Course API returns one result per course.
-        course_data = values[0]
-        fields = CourseRecord.get_fields()
-        record_data = dict()
-        for field_name, field_obj in fields.iteritems():
+        for course_data in values:
+            fields = CourseRecord.get_fields()
+            record_data = dict()
+            for field_name, field_obj in fields.iteritems():
 
-            # Had to rename these fields, since they're named with hive keywords.
-            if field_name in ('end', 'start'):
-                field_name += '_date'
+                # Had to rename these fields, since they're named with hive keywords.
+                if field_name in ('end', 'start'):
+                    field_name += '_date'
 
-            field_value = course_data.get(field_name)
-            if field_value is not None:
-                field_value = field_obj.deserialize_from_string(field_value)
-            record_data[field_name] = field_value
+                field_value = course_data.get(field_name)
+                if field_value is not None:
+                    field_value = field_obj.deserialize_from_string(field_value)
+                record_data[field_name] = field_value
 
-        record = CourseRecord(**record_data)
-        yield record.to_string_tuple()
+            record = CourseRecord(**record_data)
+            yield record.to_string_tuple()
 
     def output(self):
+        """Expose the partition location target as the output."""
         return get_target_from_url(self.output_root)
 
     def complete(self):
@@ -210,16 +211,12 @@ class CourseListTableTask(BareHiveTableTask):
         return self.table_location
 
     def output(self):
+        """Expose the partition location target as the output."""
         return get_target_from_url(self.output_root)
 
 
 class CourseListPartitionTask(CourseListDownstreamMixin, HivePartitionTask):
     """A single hive partition of course data."""
-
-    @property
-    def output_root(self):
-        """Expose the partition location path as the output root."""
-        return self.partition_location
 
     @property
     def hive_table_task(self):
@@ -235,3 +232,13 @@ class CourseListPartitionTask(CourseListDownstreamMixin, HivePartitionTask):
             overwrite=self.overwrite,
             n_reduce_tasks=self.n_reduce_tasks,
         )
+
+    @property
+    def output_root(self):
+        """Expose the partition location path as the output root."""
+        return self.partition_location
+
+    def output(self):
+        """Expose the partition location target as the output."""
+        return get_target_from_url(self.output_root)
+
