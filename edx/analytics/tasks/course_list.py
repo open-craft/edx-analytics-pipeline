@@ -61,8 +61,8 @@ class TimestampPartitionMixin(object):
         description="Format string for the course list table partition's `date` parameter.n"
                     "Must result in a filename-safe string, or your partitions will fail to be created.\n"
                     "The default value of '%Y%m%d' changes daily, and so causes a new course partition to to be "
-                    "created once a data.  Use '%Y%m%dT%H' to update hourly, though beware of load on the edX "
-                    "REST API.  See strftime for options.",
+                    "created once a day.  For example, use '%Y%m%dT%H' to update hourly, though beware of load on the"
+                    "edX REST API.  See strftime for options.",
     )
 
     @property
@@ -113,6 +113,7 @@ class CourseListApiDataTask(CourseListDownstreamMixin, OverwriteOutputMixin, Map
     def __init__(self, *args, **kwargs):
         super(CourseListApiDataTask, self).__init__(*args, **kwargs)
         self.api_args = json.loads(self.api_args)
+        self.requirements = None
 
     def requires(self):
         # Import EdxRestApiTask here so the EMR nodes don't need the edx_rest_api module, or its dependencies
@@ -241,4 +242,3 @@ class CourseListPartitionTask(CourseListDownstreamMixin, HivePartitionTask):
     def output(self):
         """Expose the partition location target as the output."""
         return get_target_from_url(self.output_root)
-

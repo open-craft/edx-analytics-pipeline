@@ -7,9 +7,7 @@ import logging
 import json
 import luigi
 from requests import RequestException
-from slumber.exceptions import HttpNotFoundError
 
-from edx_rest_api_client.client import EdxRestApiClient
 from edx.analytics.tasks.pathutil import PathSetTask
 from edx.analytics.tasks.url import get_target_from_url, url_path_join, UncheckedExternalURL
 
@@ -130,6 +128,12 @@ class EdxRestApiTask(PathSetTask):
                     'For options, see the specific section for your API resource: '
                     'http://edx.readthedocs.io/projects/edx-platform-api/'
     )
+    extend_response = luigi.Parameter(
+        default=None,
+        description='Dictionary containing any data that should be added to the REST API call before storing, e.g. '
+                    '/courses/v1/blocks API response doesn\'t contain the course_id, which is useful for parsing the '
+                    'response cache later.'
+    )
 
     # Override superclass to disable these parameters
     src = None
@@ -143,7 +147,7 @@ class EdxRestApiTask(PathSetTask):
         self.manifest, self.manifest_target = self._get_cache_target(suffix='.manifest')
 
         if isinstance(self.arguments, str):
-            self.arguments = json.parse(self.arguments)
+            self.arguments = json.loads(self.arguments)
 
     def requires(self):
         """
@@ -224,7 +228,7 @@ class EdxRestApiTask(PathSetTask):
                 arguments['page'] = page
                 try:
                     response = api_call.get(**arguments)
-                except HttpNotFoundError as exc:
+                except Exception as exc:
                     message = 'Error fetching API resource {}/{}: {}'.format(
                                 self.resource, arguments, exc)
                     log.error(message)
@@ -233,7 +237,12 @@ class EdxRestApiTask(PathSetTask):
                         raise EdxRestApiTaskException(exc, message)
                     else:
                         # Write an empty file placeholder
-                        response = message
+                        response = dict(exception=message)
+
+                # Add in the arguments passed to the API, in case there's critical information in there.
+                # E.g. /courses/v1/blocks response don't contain the course_id, which is necessary for parsing later.
+                if self.extend_response is not None:
+                    response.update(self.extend_response)
 
                 # Serialize response object to a JSON string, and write to file
                 log.debug("writing cache file %s", output_target.path)
@@ -274,6 +283,8 @@ class EdxRestApiTask(PathSetTask):
 
         Returns a tuple containing the client instance, and the expires_at datetime.
         """
+        # Import EdxRestApiClient here so the EMR nodes don't need the edx_rest_api module, or its dependencies
+        from edx_rest_api_client.client import EdxRestApiClient
         try:
             access_token, expires_at = EdxRestApiClient.get_oauth_access_token(
                 self.auth_url, self.client_id, self.client_secret)

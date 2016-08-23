@@ -54,49 +54,29 @@ class CourseBlockRecord(Record):
                                         'sorted list of blocks.   Will be null if has_multiple_parents.')
 
 
-class CourseIdTimestampPartitionMixin(TimestampPartitionMixin):
-    """
-    This mixin augments the TimestampPartitionMixin by adding a course_id parameter to the partition value,
-    property, allowing data to be partitioned on a combined index of course_id and a formatted datetime stamp.
+class CourseBlocksDownstreamMixin(TimestampPartitionMixin, WarehouseMixin, MapReduceJobTaskMixin):
+    """Common parameters used by the Course Blocks Data and Partition tasks."""
 
-    It can be used by HivePartitionTasks and tasks which invoke downstream HivePartitionTasks.
-    """
-    course_id = luigi.Parameter(
-        description='Course identifier to include in the data partition value.',
+    course_ids = luigi.Parameter(
+        # FIXME - add description
+        default=None,
     )
+
     partition_format = luigi.Parameter(
         config_path={'section': 'course_blocks', 'name': 'partition_format'},
-        default='{course_id}_%Y%m%d',
-        description="Format string for the course blocks table partition, combining the values of the course_id and "
-                    "date/time task parameters.\n"
+        default='%Y%m%d',
+        description="Format string for the course blocks table partition's `date` parameter.n"
                     "Must result in a filename-safe string, or your partitions will fail to be created.\n"
-                    "The format string includes these parts:\n"
-                    "* {course_id}: a filename-safe version of the task's `course_id`\n"
-                    "* datetime format string:  used to format the `date` parameter.\n"
-                    "  The default value of '%Y%m%d' changes daily, and so causes a new course partition to to be \n"
-                    "  created once a data.  Use '%Y%m%dT%H' to update hourly, though beware of load on the edX "
-                    "  REST API.  See strftime for options.",
+                    "The default value of '%Y%m%d' changes daily, and so causes a new course partition to to be "
+                    "created once a day.  For example, use '%Y%m%dT%H' to update hourly, though beware of load on the"
+                    "edX REST API.  See strftime for options.",
     )
-
-    @property
-    def partition_value(self):
-        """Partition based on the given course_id, datetime and partition format strings."""
-        # format the datetime first
-        datetime_format = super(CourseIdTimestampPartitionMixin, self).partition_value
-
-        # then apply the course_id
-        return unicode(datetime_format.format(course_id=get_filename_safe_course_id(self.course_id)))
-
-
-class CourseBlocksDownstreamMixin(CourseIdTimestampPartitionMixin, WarehouseMixin, MapReduceJobTaskMixin):
-    """Common parameters used by the Course Blocks Data and Partition tasks."""
-    pass
 
 
 class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin, MapReduceJobTask):
     """
     This task fetches the course blocks data from the Course Blocks edX REST API. See the EdxRestApiTask to configure
-    REST API connection parameters.  Blocks are stored in partitions by course_id, and task date.
+    REST API connection parameters.  Blocks are stored in partitions by task date.
 
     The `api_args` parameter defines the query string parameters passed to the REST API call, and is set to a default
     which fetches all the course blocks, and a list of their children, which is required for determining the block's
@@ -165,17 +145,26 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
     def __init__(self, *args, **kwargs):
         super(CourseBlocksApiDataTask, self).__init__(*args, **kwargs)
         self.api_args = json.loads(self.api_args)
-        self.api_args['course_id'] = self.course_id
+        self.requirements = None
 
     def requires(self):
         # Import EdxRestApiTask here so the EMR nodes don't need the edx_rest_api module, or its dependencies
         from edx.analytics.tasks.util.edx_rest_api import EdxRestApiTask
-        return EdxRestApiTask(
-            resource=self.api_resource,
-            arguments=self.api_args,
-            date=self.date,
-            raise_exceptions=False,
-        )
+
+        # Create a EdxRestApiTask for each course_id
+        requirements = []
+        for course_id in self.course_ids:
+            arguments = self.api_args.copy()
+            arguments['course_id'] = course_id
+            requirements.append(EdxRestApiTask(
+                resource=self.api_resource,
+                arguments=arguments,
+                extend_response=dict(course_id=course_id),
+                date=self.date,
+                raise_exceptions=False,
+            ))
+
+        return requirements
 
     def mapper(self, line):
         """
@@ -189,12 +178,15 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
                 data = json.loads(line)
                 root = data.get('root')
                 blocks = data.get('blocks', {})
-                if root and root in blocks:
-                    yield (self.course_id, data)
+                course_id = data.get('course_id')
+                if (course_id is not None and 
+                    root is not None and 
+                    root in blocks):
+                    yield (course_id, data)
             except ValueError:
                 log.error('Unable to parse course blocks API line as JSON: "%s"', line)
 
-    def reducer(self, _key, values):
+    def reducer(self, key, values):
         """
         Takes the JSON course block data, grouped by course_id, and sorts it in course tree traversal order.
 
@@ -204,6 +196,8 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
         """
         if not values:
             return
+
+        course_id = key
 
         for course_data in values:
             root_id = course_data.get('root')
@@ -241,7 +235,7 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
                             course_path += parent['display_name']
 
                 record = CourseBlockRecord(
-                    course_id=self.course_id,
+                    course_id=course_id,
                     block_id=block.get('id'),
                     block_type=block.get('type'),
                     display_name=block.get('display_name'),
@@ -313,11 +307,11 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
 
 
 class CourseBlocksTableTask(BareHiveTableTask):
-    """Hive table containing the sorted course block data, partitioned on course_id + date."""
+    """Hive table containing the sorted course block data, partitioned on formatted date."""
 
     @property
     def partition_by(self):
-        return 'courseid_dt'
+        return 'dt'
 
     @property
     def table(self):
@@ -357,7 +351,7 @@ class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, HivePartitionTask):
     @property
     def data_task(self):
         return CourseBlocksApiDataTask(
-            course_id=self.course_id,
+            course_ids=self.course_ids,
             output_root=self.output_root,
             overwrite=self.overwrite,
             n_reduce_tasks=self.n_reduce_tasks,
@@ -367,7 +361,7 @@ class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, HivePartitionTask):
 class LoadCourseBlocksTask(WarehouseMixin, OverwriteOutputMixin, MapReduceJobTaskMixin, luigi.Task):
     """
     Reads the `course_id` field out of the hive records in `input_task.output_root`, and spawns a
-    CourseBlocksPartitionTask for each course found.  
+    CourseBlocksPartitionTask using the list of course_ids.
 
     We accomplish this by making the `input_task` a required task for LoadCourseBlocksTask.  Once `input_task` is
     complete, then require a CourseBlocksPartitionTask for each course read from the `input_task.output_root`.
@@ -401,11 +395,22 @@ class LoadCourseBlocksTask(WarehouseMixin, OverwriteOutputMixin, MapReduceJobTas
         super(LoadCourseBlocksTask, self).__init__(*args, **kwargs)
         marker_url = url_path_join(self.marker, str(hash(self)))
         self.marker_target = get_target_from_url(marker_url)
-        self.requirements = None
+
+        # We'll require the course_blocks_ task once we've assembled the list of course_ids
+        self.unique_course_ids = None
+        self.course_blocks_task = CourseBlocksPartitionTask(
+            date=self.date,
+            mapreduce_engine=self.mapreduce_engine,
+            input_format=self.input_format,
+            lib_jar=self.lib_jar,
+            n_reduce_tasks=self.n_reduce_tasks,
+            remote_log_level=self.remote_log_level,
+            warehouse_path=self.warehouse_path,
+        )
 
     def requires(self):
         """
-        Generates the list of tasks required to load the course blocks from the courses output by the input_task.
+        Generates the tasks required to load the course blocks from the courses output by the input_task.
 
         Note:  Because we use an outdated luigi library, we are unable to take advantage of the dynamic dependencies
         feature which has been available since v1.2.1:
@@ -419,65 +424,49 @@ class LoadCourseBlocksTask(WarehouseMixin, OverwriteOutputMixin, MapReduceJobTas
 
         1. The first time requires() is called, and until `input_task` is complete, it yields the `input_task`.
         2. The next time requires() is called, it loads the list of courses from `input_task.output_root`, and yields a
-           CourseBlocksPartitionTask for each unique course_id.  These requirements are cached, so the output doesn't
-           get re-read.
-        3. Any subsequent calls to requires() yields the cached CourseBlocksPartitionTask requirements.
+           CourseBlocksPartitionTask with a list of unique course_id.  These requirements are cached, so the output
+           doesn't get re-read.
+        3. Any subsequent calls to requires() yields the cached CourseBlocksPartitionTask.
+
         """
+        # FIXME - try yielding both tasks, but on separate lines, to see if this lets input_task finish before
+        # course_blocks_task is scheduled.
         if not self.input_task.complete():
             log.debug('LoadCourseBlocksTask requires input_task %s', self.input_task)
             yield self.input_task
 
-        elif self.requirements is not None:
-            # If we've stored the requirements list from below, then it's ok to return it as-is.
-            log.debug('LoadCourseBlocksTask using cached requirements')
-            yield self.requirements
+        elif self.unique_course_ids is not None:
+            # If we've stored the course_ids from the input_task below, then it's ok to return it as-is.
+            log.debug('LoadCourseBlocksTask using cached requirement')
+            yield self.course_blocks_task
 
         else:
-            log.debug('LoadCourseBlocksTask loading requirements from input_task.output_root')
-            loaded_courses = dict()
+            log.debug('LoadCourseBlocksTask loading course_id list from input_task.output_root')
+            self.unique_course_ids = dict()
             input_target = get_target_from_url(self.input_task.output_root)
             for line in input_target.open('r'):
 
                 # Each line is from a hive table, so it's tab-separated
                 record = tuple(line.rstrip('\r\n').split('\t'))
 
-                # If the record contains a potentially valid course_id,
-                # create a task to load its course blocks.
+                # If the record contains a potentially valid course_id, add it to the list
                 if len(record) > self.course_id_index:
 
                     course_id = record[self.course_id_index]
-                    if course_id != DEFAULT_NULL_VALUE and course_id not in loaded_courses:
+                    if course_id != DEFAULT_NULL_VALUE:
+                        self.unique_course_ids[course_id] = True
 
-                        blocks_task = CourseBlocksPartitionTask(
-                            course_id=course_id,
-                            date=self.date,
-                            mapreduce_engine=self.mapreduce_engine,
-                            input_format=self.input_format,
-                            lib_jar=self.lib_jar,
-                            n_reduce_tasks=self.n_reduce_tasks,
-                            remote_log_level=self.remote_log_level,
-                            warehouse_path=self.warehouse_path,
-                        )
+            self.course_blocks_task.course_ids = self.unique_course_ids.keys()
+            yield self.course_blocks_task
 
-                        loaded_courses[course_id] = blocks_task
-                        yield blocks_task
-
-                self.requirements = loaded_courses.values()
-
-    def complete(self):
-        """
-        The current task is complete if no overwrite was requested,
-        and the marker file is present.
-        """
-        if super(LoadCourseBlocksTask, self).complete():
-            return self.marker_target.exists()
-        return False
+    @property
+    def output_root(self):
+        """Return the course_blocks_task output_root."""
+        return self.course_blocks_task.output_root
 
     def output(self):
-        """
-        Use the marker location as an indicator of task "completeness".
-        """
-        return self.marker_target
+        """Return the course_blocks_task output."""
+        return self.course_blocks_task.output()
 
     def run(self):
         """
@@ -487,13 +476,6 @@ class LoadCourseBlocksTask(WarehouseMixin, OverwriteOutputMixin, MapReduceJobTas
             self.remove_output_on_overwrite()
 
         super(LoadCourseBlocksTask, self).run()
-
-    def on_success(self):
-        """
-        Required tasks ran successfully, so write the marker file.
-        """
-        with self.marker_target.open('w') as marker_file:
-            marker_file.write(str(self.requirements))
 
 
 @workflow_entry_point
