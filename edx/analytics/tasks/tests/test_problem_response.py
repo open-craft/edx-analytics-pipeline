@@ -12,7 +12,7 @@ from ddt import ddt, data, unpack
 
 from edx.analytics.tasks.problem_response import (
     ProblemResponseRecord, LatestProblemResponseDataTask, LatestProblemResponseTableTask,
-    ProblemResponseReportTask,
+    ProblemResponseReportTask, LatestProblemResponsePartitionTask,
 )
 from edx.analytics.tasks.util.record import DateTimeField
 from edx.analytics.tasks.tests import unittest
@@ -20,8 +20,33 @@ from edx.analytics.tasks.tests.opaque_key_mixins import InitializeOpaqueKeysMixi
 from edx.analytics.tasks.tests.map_reduce_mixins import MapperTestMixin, ReducerTestMixin
 
 
+class ProblemResponseTestMixin(InitializeOpaqueKeysMixin):
+    """
+    Helper methods for testing the problem response tasks.
+    """
+    task_class = LatestProblemResponseDataTask
+
+    def setUp(self):
+        self.setup_dirs()
+        super(ProblemResponseTestMixin, self).setUp()
+
+    def setup_dirs(self):
+        """Create temp input and output dirs."""
+        self.temp_rootdir = tempfile.mkdtemp()
+        self.output_dir = os.path.join(self.temp_rootdir, "output")
+        os.mkdir(self.output_dir)
+        self.input_dir = os.path.join(self.temp_rootdir, "input")
+        os.mkdir(self.input_dir)
+        self.addCleanup(self.cleanup, self.temp_rootdir)
+
+    def cleanup(self, dirname):
+        """Remove the temp directory only if it exists."""
+        if os.path.exists(dirname):
+            shutil.rmtree(dirname)
+
+
 @ddt
-class LatestProblemResponseTaskMapTest(InitializeOpaqueKeysMixin, MapperTestMixin, unittest.TestCase):
+class LatestProblemResponseTaskMapTest(ProblemResponseTestMixin, MapperTestMixin, unittest.TestCase):
     """Tests the latest problem response mapper."""
 
     DEFAULT_USER_ID = 10
@@ -29,7 +54,6 @@ class LatestProblemResponseTaskMapTest(InitializeOpaqueKeysMixin, MapperTestMixi
     DEFAULT_DATE = "2013-12-17"
 
     def setUp(self):
-        self.task_class = LatestProblemResponseDataTask
         super(LatestProblemResponseTaskMapTest, self).setUp()
 
         self.initialize_ids()
@@ -150,12 +174,11 @@ class LatestProblemResponseTaskMapLegacyKeysTest(InitializeLegacyKeysMixin, Late
 
 
 @ddt
-class LatestProblemResponseTaskReducerTest(InitializeOpaqueKeysMixin, ReducerTestMixin, unittest.TestCase):
+class LatestProblemResponseTaskReducerTest(ProblemResponseTestMixin, ReducerTestMixin, unittest.TestCase):
     """
     Tests the latest problem response reducer.
     """
     def setUp(self):
-        self.task_class = LatestProblemResponseDataTask
         super(LatestProblemResponseTaskReducerTest, self).setUp()
 
         self.initialize_ids()
@@ -269,10 +292,12 @@ class LatestProblemResponseTaskReducerTest(InitializeOpaqueKeysMixin, ReducerTes
             total_attempts=total_attempts,
             first_attempt_date=first_attempt_date,
             last_attempt_date=latest_attempt['last_attempt_date'],
+            location='',
+            sort_idx=0,
         )
         # randomize the inputs, because their order shouldn't matter.
         random.shuffle(inputs)
-        return (inputs, (expected.to_key_value_tuples(),))
+        return (inputs, (expected.to_string_tuple(),))
 
     def test_no_events(self):
         self.assert_no_output([])
@@ -300,53 +325,31 @@ class LatestProblemResponseTaskReducerLegacyKeysTest(InitializeLegacyKeysMixin, 
     pass
 
 
-class LatestProblemResponseTableTaskTest(ReducerTestMixin, unittest.TestCase):
-    """Test the properties of the LatestProblemResponseTableTask."""
-    task_class = LatestProblemResponseTableTask
-
-    DATE = '2013-12-17'
-
-    def setUp(self):
-        self.task = self.task_class(  # pylint: disable=not-callable
-            interval_start=luigi.DateParameter().parse(self.DATE),
-        )
-
-    def test_interval(self):
-        today = datetime.utcnow().date()
-        self.assertEquals(self.task.interval,
-                          luigi.date_interval.Custom.parse('{}-{}'.format(self.DATE, today)))
-
-    def test_partition_by(self):
-        self.assertEquals(self.task.partition_by, None)
-
-    def test_table_name(self):
-        self.assertEquals(self.task.table, 'problem_response_latest')
-
-    def test_columns(self):
-        # Ensure the "key" columns are present and in the required order
-        columns = self.task.columns
-        self.assertEquals(columns[0], ('course_id', 'STRING'))
-        self.assertEquals(columns[1], ('answer_id', 'STRING'))
-
-
-class LatestProblemResponseDataTaskTest(ReducerTestMixin, unittest.TestCase):
+class LatestProblemResponseDataTaskTest(ProblemResponseTestMixin, ReducerTestMixin, unittest.TestCase):
     """Test the properties of the LatestProblemResponseDataTask."""
     task_class = LatestProblemResponseDataTask
     DATE = '2013-12-17'
     TEST_STRING = "Choice  \t\n\r<choicehint>Hint</choicehint>"
 
-    def setUp(self):
-        self.init_task()
-
-    def init_task(self, *args, **kwargs):
+    def create_task(self, *args, **kwargs):
         """Initialize the test task with the given kwargs."""
         if 'output_root' not in kwargs:
-            kwargs['output_root'] = '/tmp/output-root'
+            kwargs['output_root'] = self.output_dir
         if 'interval' not in kwargs:
             kwargs['interval'] = luigi.DateIntervalParameter().parse(self.DATE),
         self.task = self.task_class(  # pylint: disable=not-callable
             *args, **kwargs
         )
+
+    def test_complete(self):
+        self.create_task()
+        self.assertFalse(self.task.complete())
+
+        # Create the output_root/_SUCCESS file
+        with open(os.path.join(self.output_dir, '_SUCCESS'), 'w') as success:
+            success.write('')
+        self.assertTrue(self.task.output().exists())
+        self.assertTrue(self.task.complete())
 
     def test_extra_modules(self):
         import html5lib
@@ -366,7 +369,7 @@ class LatestProblemResponseDataTaskTest(ReducerTestMixin, unittest.TestCase):
             [clean_string])
 
     def test_no_clean_text_regex(self):
-        self.init_task(clean_text_regex=None)
+        self.create_task(clean_text_regex=None)
         self.assertIsNone(self.task.clean_text_regex)
 
         clean_string = 'Choice <choicehint>Hint</choicehint>'
@@ -378,12 +381,37 @@ class LatestProblemResponseDataTaskTest(ReducerTestMixin, unittest.TestCase):
             [clean_string])
 
 
+class LatestProblemResponseTableTaskTest(ReducerTestMixin, unittest.TestCase):
+    """Test the properties of the LatestProblemResponseTableTask."""
+    task_class = LatestProblemResponseTableTask
+
+    def setUp(self):
+        self.task = self.task_class()  # pylint: disable=not-callable
+
+    def test_partition_by(self):
+        self.assertEquals(self.task.partition_by, 'dt')
+
+    def test_table_name(self):
+        self.assertEquals(self.task.table, 'problem_response_latest')
+
+    def test_columns(self):
+        # Ensure the "key" columns are present and in the required order
+        columns = self.task.columns
+        self.assertEquals(columns[0], ('course_id', 'STRING'))
+        self.assertEquals(columns[1], ('answer_id', 'STRING'))
+
+
+class ProblemResponseReportInputTask(luigi.Task):
+    """Use for the ProblemResponseReportTask.input_task parameter."""
+    output_root = luigi.Parameter()
+
+
 @ddt
 class ProblemResponseReportTaskMapTest(MapperTestMixin, unittest.TestCase):
-    """Test the properties of the LatestProblemResponseDataTask."""
+    """Test the properties of the ProblemResponseReportTask."""
     task_class = ProblemResponseReportTask
     DEFAULT_ARGS = dict(
-        input_root='/tmp/input',
+        input_task=ProblemResponseReportInputTask(output_root='/tmp/input'),
         output_root='/tmp/output',
     )
 
@@ -411,25 +439,11 @@ class ProblemResponseReportTaskMapTest(MapperTestMixin, unittest.TestCase):
         self.assertEquals(filename, '/tmp/output/my_course_id_problem_response.csv')
 
 
-class ProblemResponseReportTestMixin(unittest.TestCase):
+class ProblemResponseReportTestMixin(ProblemResponseTestMixin, unittest.TestCase):
     """
     Helper methods for testing the problem response report tasks.
     """
     course_id = 'course_{}'
-
-    def setup_dirs(self):
-        """Create temp input and output dirs."""
-        self.temp_rootdir = tempfile.mkdtemp()
-        self.output_dir = os.path.join(self.temp_rootdir, "output")
-        os.mkdir(self.output_dir)
-        self.input_dir = os.path.join(self.temp_rootdir, "input")
-        os.mkdir(self.input_dir)
-        self.addCleanup(self.cleanup, self.temp_rootdir)
-
-    def cleanup(self, dirname):
-        """Remove the temp directory only if it exists."""
-        if os.path.exists(dirname):
-            shutil.rmtree(dirname)
 
     def create_input_output(self, num_courses, num_responses):
         """
@@ -460,6 +474,8 @@ class ProblemResponseReportTestMixin(unittest.TestCase):
                     '20',
                     self.DATE,
                     self.DATE,
+                    '',
+                    '0',
                 )
 
                 # First row is the header: field names
@@ -502,7 +518,7 @@ class ProblemResponseReportTaskReducerTest(ReducerTestMixin, ProblemResponseRepo
     def setUp(self):
         self.setup_dirs()
         self.DEFAULT_ARGS = dict(  # pylint: disable=invalid-name
-            input_root=self.input_dir,
+            input_task=ProblemResponseReportInputTask(output_root=self.input_dir),
             output_root=self.output_dir,
             report_filename_template='{course_id}_response.csv',
             report_fields=None,
@@ -531,6 +547,15 @@ class ProblemResponseReportTaskReducerTest(ReducerTestMixin, ProblemResponseRepo
 
         self.assert_report_files_correct(expected)
 
+    def test_init_report_fields(self):
+        self.DEFAULT_ARGS['report_fields'] = '["course_id", "name"]'  # use JSON string
+        self.create_task()
+
+        test_record_class = namedtuple('TestRecord', 'course_id name ignored_field')
+        record = test_record_class(course_id='course-1', name='Course Name', ignored_field='more data')
+        self.assertEquals(self.task._record_to_string_dict(record),  # pylint: disable=protected-access
+                          dict(course_id='course-1', name='Course Name'))
+
     def test_report_fields(self):
         self.task.report_fields = ['course_id']
         test_record_class = namedtuple('TestRecord', 'course_id ignored_field1  ignored_field2')
@@ -558,3 +583,55 @@ class ProblemResponseReportTaskReducerTest(ReducerTestMixin, ProblemResponseRepo
         record = test_record_class(list_field=['a', 'b'])
         self.assertEquals(self.task._record_to_string_dict(record),  # pylint: disable=protected-access
                           dict(list_field="['a', 'b']"))
+
+    def test_requires(self):
+        requirement = self.task.requires()
+        self.assertEquals(requirement.output_root, self.input_dir)
+
+
+class LatestProblemResponsePartitionTaskTest(ProblemResponseTestMixin, unittest.TestCase):
+    """Tests the LatestProblemResponsePartitionTask's formatted partition value."""
+
+    task_class = LatestProblemResponsePartitionTask
+
+    timestamp = datetime.utcnow()
+
+    # Only testing to a minute's precision due to issues with interval string parsing, as noted
+    # in partition_format parameter description.
+    partition_format = '%Y%m%dT%H%M'
+
+    def create_task(self, **kwargs):
+        """Create the task"""
+        self.task = self.task_class(
+            warehouse_path=self.output_dir,
+            **kwargs
+        )
+
+    def assert_partition_value(self):
+        """Ensure that datetimes are not filtered down to dates alone, when determining partition value."""
+        expected_partition_value = self.timestamp.strftime(self.partition_format)
+        self.assertEquals(self.task.partition_value, expected_partition_value)
+
+    def test_partition_value_with_start_end(self):
+        self.create_task(
+            interval_start='2013-05-30',
+            interval_end=self.timestamp,
+            partition_format=self.partition_format,
+        )
+        self.assert_partition_value()
+
+    def test_partition_value_with_interval(self):
+        interval = luigi.date_interval.Custom.parse('2013-05-30-{}'.format(self.timestamp.isoformat()))
+        self.create_task(
+            interval=interval,
+            partition_format=self.partition_format,
+        )
+        self.assert_partition_value()
+
+    def test_complete(self):
+        self.create_task()
+        self.assertFalse(self.task.complete())
+
+        # Create the partition dir, and task reports complete
+        os.makedirs(self.task.output_root)
+        self.assertTrue(self.task.complete())
