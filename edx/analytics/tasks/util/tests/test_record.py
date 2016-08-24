@@ -562,10 +562,12 @@ class BooleanFieldTest(unittest.TestCase):
         (10, 'True'),
         (True, 'True'),
         ('True', 'True'),
+        (u'True', 'True'),
         ('abc', 'True'),
         (['a'], 'True'),
         ({'a': 1}, 'True'),
         ('False', 'True'),
+        (u'False', 'True'),
         ('None', 'True'),
         # False values
         (0, 'False'),
@@ -578,32 +580,41 @@ class BooleanFieldTest(unittest.TestCase):
     )
     @unpack
     def test_serialize(self, value, expected_value):
-        test_record = BooleanField()
-        self.assertEquals(test_record.serialize_to_string(value), expected_value)
+        # Test with nullable and not
+        for test_record in (BooleanField(), BooleanField(nullable=True)):
+            self.assertEquals(test_record.serialize_to_string(value), expected_value)
 
     @data(
         # True values
         ('True', True),
+        (u'True', True),
+        ('true', True),
+        (u'true', True),
         ('random', True),
+        (u'random', True),
         (1, True),
-        ('False', True),
         # False values
+        ('False', False),
+        (u'False', False),
+        ('false', False),
+        (u'false', False),
         ('', False),
+        (u'', False),
         (0, False),
         # Null values (nullable=True by default)
         (DEFAULT_NULL_VALUE, None),
     )
     @unpack
     def test_deserialize(self, value, expected_value):
-        test_record = BooleanField()
-        self.assertEquals(test_record.deserialize_from_string(value), expected_value)
+        for test_record in (BooleanField(), BooleanField(nullable=True)):
+            self.assertEquals(test_record.deserialize_from_string(value), expected_value)
 
     @data(
         (DEFAULT_NULL_VALUE, True),
         ('False', False),  # None is just false if nullable=False
     )
     @unpack
-    def test_serialize_nullable(self, expected_str, nullable):
+    def test_serialize_none_nullable(self, expected_str, nullable):
         test_record = BooleanField(nullable=nullable)
         self.assertEquals(test_record.serialize_to_string(None), expected_str)
 
@@ -612,7 +623,7 @@ class BooleanFieldTest(unittest.TestCase):
         (True, False),  # '\\N' is just a string if nullable=False
     )
     @unpack
-    def test_deserialize_nullable(self, expected_value, nullable):
+    def test_deserialize_none_nullable(self, expected_value, nullable):
         test_record = BooleanField(nullable=nullable)
         self.assertEquals(test_record.deserialize_from_string(DEFAULT_NULL_VALUE), expected_value)
 
@@ -696,6 +707,8 @@ class DateTimeFieldTest(unittest.TestCase):
     @data(
         datetime.datetime.now(),
         datetime.datetime.now().strftime(DateTimeField.string_format),
+        '2015-11-01',
+        '2015-11-01 10:10',
         None
     )
     def test_validate_success(self, value):
@@ -706,8 +719,7 @@ class DateTimeFieldTest(unittest.TestCase):
         0,
         False,
         1.0,
-        '2015-11-01',
-        '2015-11-01 10:10',
+        'abc',
         object()
     )
     def test_validate_error(self, value):
