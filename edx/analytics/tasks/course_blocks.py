@@ -16,7 +16,6 @@ from edx.analytics.tasks.util.hive import (
 )
 from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
 from edx.analytics.tasks.util.record import Record, BooleanField, StringField, IntegerField, DEFAULT_NULL_VALUE
-from edx.analytics.tasks.util.opaque_key_util import get_filename_safe_course_id
 from edx.analytics.tasks.decorators import workflow_entry_point
 from edx.analytics.tasks.course_list import TimestampPartitionMixin, CourseListPartitionTask
 
@@ -58,10 +57,11 @@ class CourseBlocksDownstreamMixin(TimestampPartitionMixin, WarehouseMixin, MapRe
     """Common parameters used by the Course Blocks Data and Partition tasks."""
 
     course_ids = luigi.Parameter(
-        # FIXME - add description
         default=None,
+        description='List of course_id values to fetch course_block data for.  Accepts a list or JSON-formatted string '
+                    'defining an array of course_id strings.  Note that the default value is None, but the task will '
+                    'not be marked "complete" until a list of course_ids is provided.',
     )
-
     partition_format = luigi.Parameter(
         config_path={'section': 'course_blocks', 'name': 'partition_format'},
         default='%Y%m%d',
@@ -78,34 +78,42 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
     This task fetches the course blocks data from the Course Blocks edX REST API. See the EdxRestApiTask to configure
     REST API connection parameters.  Blocks are stored in partitions by task date.
 
-    The `api_args` parameter defines the query string parameters passed to the REST API call, and is set to a default
-    which fetches all the course blocks, and a list of their children, which is required for determining the block's
-    `course_path` and sort order.
+    The `api_args` parameter defines the query string parameters passed to the REST API call which fetches all the
+    course blocks, and a list of their children.
 
     The resulting blocks are then sorted in "course tree traversal" order, and annotated with a `course_path` string,
     which lists all the block's parent block `display_name` values, Section, Subsection, and Unit.  These `display_name`
     values are delimited by the `path_delimiter` parameter.
 
-    Blocks which have more than one parent (and create directed acyclic graphs, called DACs) are marked with
-    `has_multiple_parents`, and given a `course_path` value configured by the `multiple_parent_blocks_path` parameter.
+    There are 4 types of blocks:
 
-    Blocks which have no parents (orphans) are given a `course_path` value configured by the `deleted_blocks_path`
-    parameter.
+    * root: The root block is flagged by the Course Blocks REST API.  They are marked by `is_root=True`.  Will
+      also have `parent_block_id=None`, `course_path=''`, and `sort_idx=0`.
+    * child: Blocks which have a single parent will have `parent_block_id not None`, and a `course_path` string which
+      concatenates the parent block's display_name values.
+    * DAC: Blocks which have more than one parent (and thus create directed acyclic graphs, aka DACs) are marked with
+      `has_multiple_parents=True`.  Will also have `parent_block_id=None`, and have a `course_path` value configured by
+      the `multiple_parent_blocks_path` parameter.
+    * Orphan: Blocks which have no parents will have a `course_path` value configured by the `deleted_blocks_path`
+      parameter.
 
     Orphan and DAC blocks can be sorted to the top or bottom of the list by adjusting the `sort_unplaced_blocks_up`
     parameter.
-    """
 
+    """
     output_root = luigi.Parameter(
         description='URL where the map reduce data should be stored.',
     )
     api_args = luigi.Parameter(
         config_path={'section': 'course-blocks', 'name': 'api_args'},
-        default='{"depth": "all", "block_types_filter": "course,sequential,vertical", '
-                '"requested_fields": "children", "all_blocks": "true"}',
+        default='{"depth": "all", "requested_fields": "children", "all_blocks": "true"}',
         description='JSON structure containing the arguments passed to the course blocks API.  Course ID will be '
                     'added. Take care if altering these arguments, as many are critical for constructing the full '
-                    'course block tree. For options, see: '
+                    'course block tree.\n'
+                    'If using edx-platform release prior to eucalpytus, use: \n'
+                    '    {"depth": "all", "requested_fields": "children", "all_blocks": "true", '
+                    '"username": "<oauth_username>"}\n'
+                    'For more options, see: '
                     'http://edx.readthedocs.io/projects/edx-platform-api/en/latest/courses/blocks.html'
                     '#get-a-list-of-course-blocks-in-a-course',
     )
@@ -145,15 +153,23 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
     def __init__(self, *args, **kwargs):
         super(CourseBlocksApiDataTask, self).__init__(*args, **kwargs)
         self.api_args = json.loads(self.api_args)
-        self.requirements = None
 
     def requires(self):
+        # Determine the list of course_ids to fetch.
+        # NB: we don't do this in __init__, because they may be set later, see e.g. LoadCourseBlocksTask.requires()
+        if self.course_ids is None:
+            course_ids = []
+        elif isinstance(self.course_ids, str):
+            course_ids = json.loads(self.course_ids)
+        else:
+            course_ids = self.course_ids  # pylint: disable=redefined-variable-type
+
         # Import EdxRestApiTask here so the EMR nodes don't need the edx_rest_api module, or its dependencies
         from edx.analytics.tasks.util.edx_rest_api import EdxRestApiTask
 
-        # Create a EdxRestApiTask for each course_id
+        # Require a EdxRestApiTask for each course_id
         requirements = []
-        for course_id in self.course_ids:
+        for course_id in course_ids:
             arguments = self.api_args.copy()
             arguments['course_id'] = course_id
             requirements.append(EdxRestApiTask(
@@ -168,8 +184,10 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
 
     def mapper(self, line):
         """
-        Load each line of JSON-formatted Course Blocks data, and ensure they have the `blocks` and `root` fields.
+        Load each line of course blocks data, and ensure they have the `blocks` and `root` fields.
         Discard any invalid lines.
+
+        Input is JSON-formatted data returned from the Course Blocks API.
 
         Yields a 2-element tuple containing the course_id and the parsed JSON data as a dict.
         """
@@ -179,24 +197,23 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
                 root = data.get('root')
                 blocks = data.get('blocks', {})
                 course_id = data.get('course_id')
-                if (course_id is not None and 
-                    root is not None and 
-                    root in blocks):
+                if course_id is not None and root is not None and root in blocks:
                     yield (course_id, data)
+                else:
+                    log.error('Unable to read course blocks data from "%s"', line)
             except ValueError:
                 log.error('Unable to parse course blocks API line as JSON: "%s"', line)
 
     def reducer(self, key, values):
         """
-        Takes the JSON course block data, grouped by course_id, and sorts it in course tree traversal order.
+        Creates a CourseBlock record for each block, including:
+        * `course_path` field concatenated from the block's parents' display_name values
+        * `sort_idx` for the block, indicating where the block fits into the course in tree traversal order.
 
-        Concatenates the `course_path` field from the block's parents, and creates a CourseBlock record for each block.
+        Input is the course block values as a list of dicts, keyed by course_id.
 
-        Yields the CourseBlock record as a tuple.
+        Yields each CourseBlock record as a tuple, sorted in course tree traversal order.
         """
-        if not values:
-            return
-
         course_id = key
 
         for course_data in values:
@@ -254,9 +271,9 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
     def complete(self):
         """
         The current task is complete if no overwrite was requested,
-        and the output_root/_SUCCESS file is present.
+        a list of course_ids was requested, and the output_root/_SUCCESS file is present.
         """
-        if super(CourseBlocksApiDataTask, self).complete():
+        if super(CourseBlocksApiDataTask, self).complete() and self.course_ids is not None:
             return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
         return False
 
@@ -266,7 +283,6 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
         """
         if not self.complete():
             self.remove_output_on_overwrite()
-
         super(CourseBlocksApiDataTask, self).run()
 
     def _index_children(self, root_id, blocks, sort_idx=0, more=None):
@@ -326,20 +342,9 @@ class CourseBlocksTableTask(BareHiveTableTask):
         """Use the table location path for the output root."""
         return self.table_location
 
-    def output(self):
-        return get_target_from_url(self.output_root)
-
 
 class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, HivePartitionTask):
     """A single hive partition of course block data."""
-
-    @property
-    def output_root(self):
-        """Expose the partition location path as the output root."""
-        return self.partition_location
-
-    def output(self):
-        return get_target_from_url(self.output_root)
 
     @property
     def hive_table_task(self):
@@ -357,6 +362,15 @@ class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, HivePartitionTask):
             n_reduce_tasks=self.n_reduce_tasks,
         )
 
+    @property
+    def output_root(self):
+        """Expose the partition location path as the output root."""
+        return self.partition_location
+
+    def output(self):
+        """The output of partition tasks is the partition location."""
+        return get_target_from_url(self.output_root)
+
 
 class LoadCourseBlocksTask(WarehouseMixin, OverwriteOutputMixin, MapReduceJobTaskMixin, luigi.Task):
     """
@@ -370,13 +384,15 @@ class LoadCourseBlocksTask(WarehouseMixin, OverwriteOutputMixin, MapReduceJobTas
 
     This task writes a `marker` file on successful completion, with its name hashed to include this task's current
     parameters.  If the `marker` file exists, then the task won't re-process the data in `input_task`.
+
     """
     date = luigi.DateParameter(
         description='Upper bound date/time for the generated course blocks partitions.'
     )
     input_task = luigi.Parameter(
-        description='Luigi task whose hive output contains a list of courses with course_blocks we want to read.'
-    )
+        description='Luigi.task instance whose hive output contains a list of courses whose course_blocks we want '
+                    'to load.  e.g. a CourseListPartitionTask instance')
+
     course_id_index = luigi.IntParameter(
         config_path={'section': 'course-blocks', 'name': 'course_id_index'},
         default=0,
@@ -410,54 +426,44 @@ class LoadCourseBlocksTask(WarehouseMixin, OverwriteOutputMixin, MapReduceJobTas
 
     def requires(self):
         """
-        Generates the tasks required to load the course blocks from the courses output by the input_task.
+        Returns the tasks required to load the course blocks from the courses output by the input_task.
 
         Note:  Because we use an outdated luigi library, we are unable to take advantage of the dynamic dependencies
         feature which has been available since v1.2.1:
 
             https://github.com/spotify/luigi/blob/master/doc/tasks.rst#dynamic-dependencies
 
-        So we have to trick luigi into allowing us to have dynamic dependencies by changing what this requires()
-        function returns when the `input_task.output_root` is ready.  The luigi.worker throws and catches a
-        RuntimeError: "Unfulfilled dependencies at run time" exception once, but then re-schedules this task to 
-        finish executing the dependent tasks.
+        So we have to trick luigi into allowing us to have dynamic dependencies by changing the requirements during the
+        task run.  This is undesirable, but unfortunately necessary.  The luigi.worker throws and catches a
+        RuntimeError: "Unfulfilled dependencies at run time" exception once, but then re-schedules the offending task to
+        finish executing its dependent tasks.
 
-        1. The first time requires() is called, and until `input_task` is complete, it yields the `input_task`.
-        2. The next time requires() is called, it loads the list of courses from `input_task.output_root`, and yields a
-           CourseBlocksPartitionTask with a list of unique course_id.  These requirements are cached, so the output
-           doesn't get re-read.
-        3. Any subsequent calls to requires() yields the cached CourseBlocksPartitionTask.
+        This method returns self.input_task, and self.course_blocks task as requirements.
+
+        However, once self.input_task is complete, we reads its output to get a list of course_ids, which the
+        CourseBlocksApiDataTask uses to generate its list of require() tasks.
 
         """
-        # FIXME - try yielding both tasks, but on separate lines, to see if this lets input_task finish before
-        # course_blocks_task is scheduled.
-        if not self.input_task.complete():
-            log.debug('LoadCourseBlocksTask requires input_task %s', self.input_task)
-            yield self.input_task
+        if self.input_task.complete():
+            if self.unique_course_ids is None:
+                self.unique_course_ids = dict()
 
-        elif self.unique_course_ids is not None:
-            # If we've stored the course_ids from the input_task below, then it's ok to return it as-is.
-            log.debug('LoadCourseBlocksTask using cached requirement')
-            yield self.course_blocks_task
+                input_target = get_target_from_url(self.input_task.output_root)
+                for line in input_target.open('r'):
 
-        else:
-            log.debug('LoadCourseBlocksTask loading course_id list from input_task.output_root')
-            self.unique_course_ids = dict()
-            input_target = get_target_from_url(self.input_task.output_root)
-            for line in input_target.open('r'):
+                    # Each line is from a hive table, so it's tab-separated
+                    record = tuple(line.rstrip('\r\n').split('\t'))
 
-                # Each line is from a hive table, so it's tab-separated
-                record = tuple(line.rstrip('\r\n').split('\t'))
+                    # If the record contains a potentially valid course_id, add it to the list
+                    if len(record) > self.course_id_index:
 
-                # If the record contains a potentially valid course_id, add it to the list
-                if len(record) > self.course_id_index:
+                        course_id = record[self.course_id_index]
+                        if course_id != DEFAULT_NULL_VALUE:
+                            self.unique_course_ids[course_id] = True
 
-                    course_id = record[self.course_id_index]
-                    if course_id != DEFAULT_NULL_VALUE:
-                        self.unique_course_ids[course_id] = True
+                self.course_blocks_task.course_ids = self.unique_course_ids.keys()
 
-            self.course_blocks_task.course_ids = self.unique_course_ids.keys()
-            yield self.course_blocks_task
+        return (self.input_task, self.course_blocks_task)
 
     @property
     def output_root(self):

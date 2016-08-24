@@ -82,7 +82,7 @@ class CourseListApiDataTask(CourseListDownstreamMixin, OverwriteOutputMixin, Map
     connection parameters.
 
     The `api_args` parameter defines the query string parameters passed to the REST API call.
-    The `api_resource` parameter indicates that this task contacts the Courses API.
+    The `api_resource` parameter value indicates that this task contacts the Courses API.
 
     The resulting courses are stored in partitions by task date.
 
@@ -126,19 +126,22 @@ class CourseListApiDataTask(CourseListDownstreamMixin, OverwriteOutputMixin, Map
 
     def mapper(self, line):
         """
-        Load each line of JSON-formatted Course data, and ensure the `results` field is present.
-        Discard any invalid lines.
+        Load each line of JSON-formatted Course data, and discard any invalid lines.
 
-        Yields a 20element tuple containing the course's ID and the parsed JSON data as a dict.
+        Yields a 2-element tuple for each valid course containing the course's ID and the parsed JSON data as a dict.
         """
         if line is not None:
             try:
                 data = json.loads(line)
-                courses = data.get('results')
+                courses = data.get('results', [])
                 for course in courses:
-                    yield (course['id'], course)
+                    course_id = course.get('id', course.get('course_id'))
+                    if course_id is not None:
+                        yield (course_id, course)
+                    else:
+                        log.error('Unable to read course data from "%s"', line)
             except ValueError:
-                log.error('Unable to parse course API line as JSON: "%s"', line)
+                log.error('Unable to parse course API response line: "%s"', line)
 
     def reducer(self, _key, values):
         """
@@ -146,9 +149,6 @@ class CourseListApiDataTask(CourseListDownstreamMixin, OverwriteOutputMixin, Map
 
         Yields the CourseRecord as a tuple.
         """
-        if not values:
-            return
-
         # Note that there should only ever by one record in the values list,
         # since the Course API returns one result per course.
         for course_data in values:
@@ -169,7 +169,7 @@ class CourseListApiDataTask(CourseListDownstreamMixin, OverwriteOutputMixin, Map
             yield record.to_string_tuple()
 
     def output(self):
-        """Expose the partition location target as the output."""
+        """Expose the data location target as the output."""
         return get_target_from_url(self.output_root)
 
     def complete(self):
@@ -211,10 +211,6 @@ class CourseListTableTask(BareHiveTableTask):
         """Use the table location path for the output root."""
         return self.table_location
 
-    def output(self):
-        """Expose the partition location target as the output."""
-        return get_target_from_url(self.output_root)
-
 
 class CourseListPartitionTask(CourseListDownstreamMixin, HivePartitionTask):
     """A single hive partition of course data."""
@@ -240,5 +236,5 @@ class CourseListPartitionTask(CourseListDownstreamMixin, HivePartitionTask):
         return self.partition_location
 
     def output(self):
-        """Expose the partition location target as the output."""
+        """The output of partition tasks is the partition location."""
         return get_target_from_url(self.output_root)

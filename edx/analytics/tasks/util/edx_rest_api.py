@@ -6,7 +6,7 @@ import datetime
 import logging
 import json
 import luigi
-from requests import RequestException
+import requests
 
 from edx.analytics.tasks.pathutil import PathSetTask
 from edx.analytics.tasks.url import get_target_from_url, url_path_join, UncheckedExternalURL
@@ -34,8 +34,13 @@ class EdxRestApiTask(PathSetTask):
     accept a date or datetime instance, and so data may be refreshed more frequently if desired.  But beware of load on
     the REST API.
 
-    The `client_id` and `client_secret` must correspond to an existing OAuth2 client on the edxapp LMS, which serves the
-    edX REST API.  New OAuth2 clients can be created using, e.g.,
+    Authenticates using `client_id` and `client_secret` (eucalptus+), or additionally using `oauth_username` and
+    `oauth_password` (cypress/dogwood) if configured.
+
+    To authenticate to the REST API this task POSTs credentials to the authorization URL, which is concatenated from the
+    `base_url` and `auth_url' parameters, and retrieves a temporary `access_token`.
+
+    OAuth2 clients can be created/updated using, e.g.,
 
       ./manage.py lms --settings=devstack create_oauth2_client  \
             http://localhost:9999  # URL doesn't matter \
@@ -46,9 +51,6 @@ class EdxRestApiTask(PathSetTask):
             --client_secret oauth_secret \
             --trusted
 
-    To authenticate to the REST API, this task contacts the authorization URL, concatenated from the `base_url` and
-    `auth_url' parameters.  The `client_id` and `client_secret` values are converted into an access token, which has an
-    expiration date.  The task will re-authenticate if the expiration date passes.
 
     Once the client is authenticated, then the REST API call is made.  The REST API URL is concatenated from the
     `base_url`, `base_path`, and `resource` parameters.  Query string arguments are passed from the `arguments`
@@ -71,15 +73,27 @@ class EdxRestApiTask(PathSetTask):
     )
     client_id = luigi.Parameter(
         config_path={'section': 'edx-rest-api', 'name': 'client_id'},
-        description='OAuth client ID authorized to query the Course Blocks API.',
+        description='OAuth client ID authorized to query the edX REST API.',
     )
     client_secret = luigi.Parameter(
         config_path={'section': 'edx-rest-api', 'name': 'client_secret'},
-        description='OAuth secret, used with the client ID, to query the Course Blocks API.',
+        description='OAuth secret, used with the client ID, to authenticate to the edX REST API.',
+    )
+    oauth_username = luigi.Parameter(
+        config_path={'section': 'edx-rest-api', 'name': 'oauth_username'},
+        default=None,
+        description='OAuth username authorized to query the edX REST API (usually requires staff access).'
+                    'Required when contacting edx-platform releases prior to eucalpytus.',
+    )
+    oauth_password = luigi.Parameter(
+        config_path={'section': 'edx-rest-api', 'name': 'oauth_password'},
+        default=None,
+        description='OAuth password, used with the oauth_username, to authenticate to the edX REST API. '
+                    'Required when contacting edx-platform releases prior to eucalpytus.',
     )
     base_url = luigi.Parameter(
         config_path={'section': 'edx-rest-api', 'name': 'base_url'},
-        description="Base URL for the Course Blocks API, e.g. http://localhost:8000\n"
+        description='Base URL for the Course Blocks API, e.g. http://localhost:8000\n'
                     'The full API URL will be joined from {base_url}, {base_path}, {resource}.'
     )
     auth_path = luigi.Parameter(
@@ -142,6 +156,11 @@ class EdxRestApiTask(PathSetTask):
 
     def __init__(self, *args, **kwargs):
         super(EdxRestApiTask, self).__init__(*args, **kwargs)
+
+        # If oauth_username is set, then oauth_password must be too.
+        assert self.oauth_password is not None if self.oauth_username else True, (
+            "oauth_username requires oauth_password to be set.")
+
         self.url = url_path_join(self.base_url, self.base_path)
         self.auth_url = url_path_join(self.base_url, self.auth_path)
         self.manifest, self.manifest_target = self._get_cache_target(suffix='.manifest')
@@ -228,15 +247,15 @@ class EdxRestApiTask(PathSetTask):
                 arguments['page'] = page
                 try:
                     response = api_call.get(**arguments)
-                except Exception as exc:
-                    message = 'Error fetching API resource {}/{}: {}'.format(
-                                self.resource, arguments, exc)
+                except Exception as exc:  # pylint: disable=broad-except
+                    message = 'Error fetching API resource {}/?{}: {}'.format(self.resource, arguments, exc)
                     log.error(message)
+
                     # If configured to raise exceptions, raise one.
                     if self.raise_exceptions:
                         raise EdxRestApiTaskException(exc, message)
                     else:
-                        # Write an empty file placeholder
+                        # Write an file placeholder, containing the exception message.
                         response = dict(exception=message)
 
                 # Add in the arguments passed to the API, in case there's critical information in there.
@@ -277,23 +296,36 @@ class EdxRestApiTask(PathSetTask):
 
     def _get_client(self):
         """
-        Create a new authenticated EdxRestApiClient instance.
+        Create a new authenticated EdxRestApiClient instance by creating a new access token from the configured
+        credentials.
 
-        Generates a new access token from the auth_url using the client_id and client_secret.
+        To authenticate to Eucalpytus+ releases of edx-platform, only these parameters need to be configured:
+        * `client_id`
+        * `client_secret`
+
+        To authenticate to Dogwood releases of edx-platform, the parameters listed above must be configured, plus these:
+        * `oauth_username`
+        * `oauth_password`
 
         Returns a tuple containing the client instance, and the expires_at datetime.
         """
         # Import EdxRestApiClient here so the EMR nodes don't need the edx_rest_api module, or its dependencies
         from edx_rest_api_client.client import EdxRestApiClient
-        try:
-            access_token, expires_at = EdxRestApiClient.get_oauth_access_token(
-                self.auth_url, self.client_id, self.client_secret)
 
-        except RequestException as exc:
-            raise EdxRestApiTaskException(exc, 'Invalid client_id or client_secret. Please check your configuration.')
+        # Default expires_at to one day from now
+        try:
+            if self.oauth_username and self.oauth_password:
+                access_token, expires_at = self._get_oauth_access_token_from_password()
+            else:
+                access_token, expires_at = EdxRestApiClient.get_oauth_access_token(
+                    self.auth_url, self.client_id, self.client_secret)
+
+        except requests.RequestException as exc:
+            raise EdxRestApiTaskException(exc, 'Invalid client_id or client_secret: {}. '
+                                               'Please check your configuration.'.format(exc))
         except ValueError as exc:
-            raise EdxRestApiTaskException(exc, 'Invalid auth_url: {}. Please check your configuration.'.format(
-                self.auth_url))
+            raise EdxRestApiTaskException(exc, 'Invalid auth_url {}: {}. '
+                                               'Please check your configuration.'.format(self.auth_url, exc))
 
         client = EdxRestApiClient(
             self.url,
@@ -301,3 +333,34 @@ class EdxRestApiTask(PathSetTask):
             timeout=self.timeout
         )
         return client, expires_at
+
+    def _get_oauth_access_token_from_password(self):
+        """
+        Uses the configured client_id/client_secret + oauth_username/oauth_password to get an access token.
+        This approach is required for edx-platform dogwood release.
+        """
+        now = datetime.datetime.utcnow()
+
+        response = requests.post(
+            self.auth_url,
+            data={
+                'grant_type': 'password',
+                'token_type': 'bearer',
+                'client_id': self.client_id,
+                'client_secret': self.client_secret,
+                'username': self.oauth_username,
+                'password': self.oauth_password,
+            }
+        )
+
+        data = response.json()
+
+        try:
+            access_token = data['access_token']
+            expires_in = data['expires_in']
+        except KeyError:
+            raise requests.RequestException(response=response)
+
+        expires_at = now + datetime.timedelta(seconds=expires_in)
+
+        return access_token, expires_at
