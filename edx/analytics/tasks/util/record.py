@@ -544,6 +544,8 @@ class BooleanField(Field):
         """Return a bool value, or NULL if nullable, from the given string."""
         if self.nullable and string_value == DEFAULT_NULL_VALUE:
             return None
+        elif hasattr(string_value, 'title') and string_value.title() == 'False':
+            return False
         return bool(string_value)
 
 
@@ -596,7 +598,7 @@ class DateTimeField(Field):  # pylint: disable=abstract-method
             if isinstance(value, str):
                 try:
                     self.deserialize_from_string(value)
-                except ValueError:
+                except (ValueError, TypeError):
                     validation_errors.append('The string value cannot be parsed to a datetime')
             elif not isinstance(value, datetime.datetime):
                 validation_errors.append('The value is not a datetime')
