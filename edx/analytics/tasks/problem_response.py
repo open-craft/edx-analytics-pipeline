@@ -5,8 +5,9 @@ import re
 import csv
 import ast
 import json
-from datetime import datetime
+import datetime
 import logging
+import textwrap
 import luigi
 
 from edx.analytics.tasks.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin, MultiOutputMapReduceJobTask
@@ -14,12 +15,13 @@ from edx.analytics.tasks.pathutil import EventLogSelectionDownstreamMixin, Event
 from edx.analytics.tasks.url import get_target_from_url, url_path_join
 from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
 from edx.analytics.tasks.decorators import workflow_entry_point
-from edx.analytics.tasks.util.hive import BareHiveTableTask
+from edx.analytics.tasks.util.hive import BareHiveTableTask, HivePartitionTask, hive_database_name
 from edx.analytics.tasks.util.opaque_key_util import get_filename_safe_course_id
 from edx.analytics.tasks.util.record import (
     Record, StringField, StringListField, IntegerField, DateTimeField, FloatField, BooleanField,
 )
-
+from edx.analytics.tasks.course_list import TimestampPartitionMixin, CourseListPartitionTask
+from edx.analytics.tasks.course_blocks import CourseBlocksPartitionTask
 from edx.analytics.tasks.answer_dist import ProblemCheckEventMixin, get_problem_check_event
 
 log = logging.getLogger(__name__)
@@ -30,12 +32,12 @@ class ProblemResponseRecord(Record):
     Record containing the data for a single user's response to a problem, in a given date range.
 
     If there are multiple questions in a problem, they are spread over separate ProblemResponseRecords.
+
+    Note that the course_id field is available from the partition string.
     """
-    # Fields that provide the unique key for each record
+    # Data sourced from problem_response tracking logs
     course_id = StringField(description='Course containing the problem.')
     answer_id = StringField(description='Learner\'s answer ID.')
-
-    # Remaining data fields
     problem_id = StringField(description='Problem\'s block usage ID.')
     problem = StringField(description='Problem display name, at time of answering.')
     username = StringField(description='Learner\'s username.')
@@ -50,18 +52,14 @@ class ProblemResponseRecord(Record):
     first_attempt_date = DateTimeField(description='date/time of the first attempt the user has made on the problem.')
     last_attempt_date = DateTimeField(description='date/time of the last attempt the user has made on the problem.')
 
-    def to_key_value_tuples(self, num_keys=2):
-        """
-        Return two string tuples:
-            * first "num_key" field values
-            * the remaining field values
-        """
-        string_tuple = self.to_string_tuple()
-        return (string_tuple[:num_keys],
-                string_tuple[num_keys:])
+    # Data sourced from course_blocks
+    location = StringField(description='Problem location in the course, concatenated from Section, Subsection, Unit, '
+                                       'and problem display name.  Sourced from course_blocks.course_path')
+    sort_idx = IntegerField(description='Sort index for the problem location.  Sourced from course_blocks.sort_idx')
 
 
-class ProblemResponseTableMixin(EventLogSelectionDownstreamMixin,
+class ProblemResponseTableMixin(TimestampPartitionMixin,
+                                EventLogSelectionDownstreamMixin,
                                 MapReduceJobTaskMixin):
     """
     Common parameters passed through the problem response workflow.
@@ -75,50 +73,65 @@ class ProblemResponseTableMixin(EventLogSelectionDownstreamMixin,
 
     # Define optional parameters, to be used if 'interval' is not defined.
     interval_start = luigi.DateParameter(
-        config_path={'section': 'problem_response', 'name': 'interval_start'},
+        config_path={'section': 'problem-response', 'name': 'interval_start'},
+        default=datetime.date(2013, 5, 30),
         significant=False,
         description='The start date to export logs for.  Ignored if `interval` is provided.',
     )
     interval_end = luigi.DateParameter(
-        default=datetime.utcnow().date(),
+        default=datetime.datetime.utcnow(),
         significant=False,
         description='The end date to export logs for.  Ignored if `interval` is provided. '
-        'Default is today, UTC.',
+        'Default is now, UTC.',
+    )
+
+    # Override this parameter so we can change the config_path and default value.
+    partition_format = luigi.Parameter(
+        config_path={'section': 'problem-response', 'name': 'partition_format'},
+        default='%Y%m%d',
+        description='Datetime format string for the table partition, which is applied to the configured course_id '
+                    'and interval end parameters.  Must result in a filename-safe string, or your partitions will '
+                    'fail to be created.  It results in a combined partition containing: \n'
+                    '* {course_id}: a filename-safe version of the configured course_id\n'
+                    '* datetime format string:  Adjust this portion to update the data more or less frequently.\n'
+                    '  The default value of "%Y%m%d" changes daily, and so allows the data to update once a day.\n'
+                    '  For example, use "%Y%m%dT%H" to update hourly. See strftime for options.'
+                    'NB: Using time-based format strings with the `interval` string parameter (as opposed to setting '
+                    '`interval_start` and `interval_end`) is not recommended, as the interval parsing logic will '
+                    ' likely result in an altered timestamp.',
+
     )
 
     def __init__(self, *args, **kwargs):
         super(ProblemResponseTableMixin, self).__init__(*args, **kwargs)
-
         if not self.interval:
             self.interval = luigi.date_interval.Custom(self.interval_start, self.interval_end)
+        self.date = self.interval.date_b
 
 
-class LatestProblemResponseTableTask(ProblemResponseTableMixin,
-                                     BareHiveTableTask):
+class ProblemResponseTableTask(ProblemResponseTableMixin, BareHiveTableTask):
     """
-    A hive table containing the latest problem response data.
+    A hive table containing problem response data, partitioned on datetime.
     """
-    partition_by = None
-    table = 'problem_response_latest'
+    # Implement in subclass
+    table = None
+
+    @property
+    def partition_by(self):
+        return 'dt'
 
     @property
     def columns(self):
         return ProblemResponseRecord.get_hive_schema()
 
-    @property
-    def output_root(self):
-        """Use the table location path for the output root."""
-        return self.table_location
 
-    def requires(self):
-        return LatestProblemResponseDataTask(
-            n_reduce_tasks=self.n_reduce_tasks,
-            source=self.source,
-            interval=self.interval,
-            pattern=self.pattern,
-            output_root=self.output_root,
-            overwrite=self.overwrite
-        )
+class LatestProblemResponseTableTask(ProblemResponseTableTask):
+    """
+    A hive table containing the latest problem response data, partitioned on a formatted datetime.
+    """
+    @property
+    def table(self):
+        return 'problem_response_latest'
 
 
 class ProblemResponseDataMixin(object):
@@ -266,10 +279,12 @@ class LatestProblemResponseDataTask(EventLogSelectionMixin,
                 answer=answer.get('answer', ''),
                 total_attempts=total_attempts,
                 first_attempt_date=first_attempt_date,
-                last_attempt_date=last_attempt_date
+                last_attempt_date=last_attempt_date,
+                location='',
+                sort_idx=0,
             )
 
-            yield latest_response_record.to_key_value_tuples()
+            yield latest_response_record.to_string_tuple()
 
     def _clean_string(self, string):
         """Remove unwanted characters from the given string or list of strings."""
@@ -352,9 +367,8 @@ class LatestProblemResponseDataTask(EventLogSelectionMixin,
         The current task is complete if no overwrite was requested,
         and the output_root/_SUCCESS file is present.
         """
-        if super(LatestProblemResponseDataTask, self).complete():
-            return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
-        return False
+        return (super(LatestProblemResponseDataTask, self).complete() and
+                get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists())
 
     def run(self):
         """
@@ -366,6 +380,147 @@ class LatestProblemResponseDataTask(EventLogSelectionMixin,
         super(LatestProblemResponseDataTask, self).run()
 
 
+class ProblemResponsePartitionTask(ProblemResponseTableMixin, HivePartitionTask):
+    """An abstract partition task for ProblemResponse hive data."""
+
+    # Implement in subclass
+    hive_table_task = None
+    data_task = None
+
+    # Write the output directly to the final destination and rely on the _SUCCESS file to
+    # indicate whether or not it is complete. Note that this is a custom extension to luigi.
+    enable_direct_output = True
+
+    @property
+    def output_root(self):
+        """Expose the partition location path as the output root."""
+        return self.partition_location
+
+    def output(self):
+        """The output of partition tasks is the partition location."""
+        return get_target_from_url(self.output_root)
+
+
+class LatestProblemResponsePartitionTask(ProblemResponsePartitionTask):
+    """The hive partition for the LatestProblemResponse table and data tasks."""
+
+    @property
+    def hive_table_task(self):
+        return LatestProblemResponseTableTask(
+            warehouse_path=self.warehouse_path,
+            overwrite=self.overwrite,
+        )
+
+    @property
+    def data_task(self):
+        return LatestProblemResponseDataTask(
+            source=self.source,
+            pattern=self.pattern,
+            interval=self.interval,
+            output_root=self.output_root,
+            overwrite=self.overwrite,
+            n_reduce_tasks=self.n_reduce_tasks,
+        )
+
+
+class ProblemResponseLocationTableTask(ProblemResponseTableTask):
+    """
+    A hive table containing the latest problem response data, sorted by and joined with the course blocks location,
+    partitioned on a formatted datetime.
+    """
+    @property
+    def table(self):
+        return 'problem_response_location'
+
+
+class ProblemResponseLocationPartitionTask(ProblemResponsePartitionTask):
+    """
+    Joins the given ProblemResponse data with Course Blocks location data into a new partition.
+
+    Requires the course_blocks table to exist, but if the course_blocks partition does not exist, then the problem
+    response records stored in this partition will have location=path_delimiter + problem_response.problem and
+    sort_idx=0, and will be sorted in an indeterminate order.
+
+    The resulting records are sorted by course_id, course_blocks.sort_idx, and first_attempt_date, and
+    partitioned by formatted date.
+    """
+    problem_response_partition = luigi.Parameter(
+        description='ProblemResponsePartitionTask instance which contains this partition\'s problem response data.',
+    )
+    course_blocks_partition = luigi.Parameter(
+        description='CourseBlocksPartitionTask instance to query to determine this partition\'s problem response '
+                    'location and sort order.'
+    )
+    path_delimiter = luigi.Parameter(
+        config_path={'section': 'course-blocks', 'name': 'path_delimiter'},
+        default=' / ',
+        description='String used to delimit the course path sections when assembling the full block location.',
+    )
+
+    def __init__(self, *args, **kwargs):
+        super(ProblemResponseLocationPartitionTask, self).__init__(*args, **kwargs)
+
+    def query(self):
+        query = """
+            USE {database_name};
+            INSERT OVERWRITE TABLE {table} PARTITION ({partition.query_spec}) {if_not_exists}
+            SELECT
+                pr.course_id,
+                pr.answer_id,
+                pr.problem_id,
+                pr.problem,
+                pr.username,
+                pr.question,
+                pr.score,
+                pr.max_score,
+                pr.correct,
+                pr.answer,
+                pr.total_attempts,
+                pr.first_attempt_date,
+                pr.last_attempt_date,
+                CONCAT(COALESCE(cb.course_path, ''), '{path_delimiter}', pr.problem) as location,
+                COALESCE(cb.sort_idx, 0) as sort_idx
+            FROM {problem_response_table} pr
+            LEFT OUTER JOIN {course_blocks_table} cb
+                ON (cb.block_id=pr.problem_id and cb.{course_blocks_partition})
+            WHERE pr.{problem_response_partition}
+            ORDER BY pr.course_id, sort_idx, pr.first_attempt_date
+        """.format(
+            database_name=hive_database_name(),
+            table=self.hive_table_task.table,
+            partition=self.partition,
+            path_delimiter=self.path_delimiter,
+            if_not_exists='' if self.overwrite else 'IF NOT EXISTS',
+            problem_response_table=self.problem_response_partition.hive_table_task.table,
+            problem_response_partition="{}='{}'".format(self.problem_response_partition.hive_table_task.partition_by,
+                                                        self.problem_response_partition.partition_value),
+            course_blocks_table=self.course_blocks_partition.hive_table_task.table,
+            course_blocks_partition="{}='{}'".format(self.course_blocks_partition.hive_table_task.partition_by,
+                                                     self.course_blocks_partition.partition_value),
+        )
+
+        query = textwrap.dedent(query)
+        log.debug('query: %s', query)
+        return query
+
+    @property
+    def hive_table_task(self):
+        return ProblemResponseLocationTableTask(
+            warehouse_path=self.warehouse_path,
+            overwrite=self.overwrite,
+        )
+
+    def requires(self):
+        """
+        Ensures that the tables and data required exist before query() is run.
+        """
+        return (
+            self.course_blocks_partition.hive_table_task,
+            self.problem_response_partition,
+            self.hive_table_task,
+        )
+
+
 class ProblemResponseReportTask(ProblemResponseDataMixin,
                                 MultiOutputMapReduceJobTask):
     """
@@ -373,8 +528,8 @@ class ProblemResponseReportTask(ProblemResponseDataMixin,
 
     ProblemResponseRecords are mapped by course_id, and each course is written to a separate file.
     """
-    input_root = luigi.Parameter(
-        description="URL pointing to the folder of problem response records to include in the reports.",
+    input_task = luigi.Parameter(
+        description='ProblemResponsePartitionTask instance containing the data to put in the generated reports.'
     )
     report_filename_template = luigi.Parameter(
         config_path={'section': 'problem-response', 'name': 'report_filename_template'},
@@ -395,7 +550,7 @@ class ProblemResponseReportTask(ProblemResponseDataMixin,
     report_field_datetime_format = luigi.Parameter(
         default=None,
         config_path={'section': 'problem-response', 'name': 'report_field_datetime_format'},
-        description='Format string to use for datetime fields in the CSV file.'
+        description='Optional format string to use for datetime fields in the CSV file.'
                     ' See strftime() for details.'
     )
     report_field_list_delimiter = luigi.Parameter(
@@ -414,15 +569,15 @@ class ProblemResponseReportTask(ProblemResponseDataMixin,
         self.record_fields = ProblemResponseRecord.get_fields().keys()
         if self.report_fields is None:
             self.report_fields = self.record_fields
-        else:
+        elif isinstance(self.report_fields, basestring):
             self.report_fields = json.loads(self.report_fields)
 
         # Support raw strings in report_field_list_delimiter
         if self.report_field_list_delimiter is not None:
             self.report_field_list_delimiter = ast.literal_eval(self.report_field_list_delimiter)
 
-    def input_hadoop(self):
-        return get_target_from_url(self.input_root)
+    def requires(self):
+        return self.input_task
 
     def output(self):
         """
@@ -437,7 +592,6 @@ class ProblemResponseReportTask(ProblemResponseDataMixin,
         The Analytics API expects the problem response files to be stored in a
         folder named by the course_id, so we sanitize it to create the filename.
         """
-
         if course_id:
             safe_course_id = get_filename_safe_course_id(course_id)
             filename = self.report_filename_template.format(course_id=safe_course_id)
@@ -453,7 +607,6 @@ class ProblemResponseReportTask(ProblemResponseDataMixin,
         Yields: the course_id, and a full tuple for the record:
             course_id, (course_id, answer_id, problem_id, ...)
         """
-
         if line is not None:
             content = line.split('\t')
             if len(content) > 1:
@@ -484,7 +637,7 @@ class ProblemResponseReportTask(ProblemResponseDataMixin,
             value = getattr(record, field_name, None)
 
             # Format datetime fields if configured
-            if isinstance(value, datetime):
+            if isinstance(value, datetime.datetime):
                 if self.report_field_datetime_format is not None:
                     value = value.strftime(self.report_field_datetime_format)
 
@@ -526,35 +679,52 @@ class ProblemResponseReportWorkflow(ProblemResponseTableMixin,
         # Args shared by all tasks
         kwargs = dict(
             mapreduce_engine=self.mapreduce_engine,
-            input_format=self.input_format,
             lib_jar=self.lib_jar,
             n_reduce_tasks=self.n_reduce_tasks,
             remote_log_level=self.remote_log_level,
+            input_format=self.input_format,
         )
 
-        # Initialize table task
-        latest_table_task = LatestProblemResponseTableTask(
-            overwrite=self.hive_overwrite,
+        # Initialize problem response table task
+        problem_response_task = LatestProblemResponsePartitionTask(
             interval=self.interval,
             interval_start=self.interval_start,
             interval_end=self.interval_end,
             source=self.source,
             pattern=self.pattern,
+            overwrite=self.hive_overwrite,
+            **kwargs
+        )
+
+        # Initialize the course list partition task, partitioned on date
+        course_list_task = CourseListPartitionTask(
+            **kwargs
+        )
+
+        # Initialize the all course blocks data task, feeding
+        # in the course_list_task's output as input.
+        course_blocks_task = CourseBlocksPartitionTask(
+            date=problem_response_task.date,
+            input_root=course_list_task.output_root,
+            **kwargs
+        )
+
+        # Initialize problem response + course location partition task
+        problem_response_location_task = ProblemResponseLocationPartitionTask(
+            problem_response_partition=problem_response_task,
+            course_blocks_partition=course_blocks_task,
+            overwrite=self.hive_overwrite,
             **kwargs
         )
 
         # Initialize report task
-        # NB: its input_root is latest_table_task's output_root
+        # NB: its input_task is the problem_response_location_task
         report_task = ProblemResponseReportTask(
-            input_root=latest_table_task.output_root,
+            input_task=problem_response_location_task,
             output_root=self.output_root,
             marker=self.marker,
             **kwargs
         )
 
-        # Order is important here, and unintuitive:
-        #  the reports depend on the latest_table_task, yet it goes last.
-        yield(
-            report_task,
-            latest_table_task,
-        )
+        # Only need to require the report_task, as the other tasks are dependencies of each other.
+        yield report_task
