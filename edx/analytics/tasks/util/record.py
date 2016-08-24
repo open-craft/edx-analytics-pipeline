@@ -1,6 +1,7 @@
 """Tools for working with typed records."""
 
 from collections import OrderedDict
+import re
 import datetime
 import itertools
 
@@ -594,7 +595,7 @@ class DateTimeField(Field):  # pylint: disable=abstract-method
             # Try to parse string datetimes
             if isinstance(value, str):
                 try:
-                    datetime.datetime.strptime(value, self.string_format)
+                    self.deserialize_from_string(value)
                 except ValueError:
                     validation_errors.append('The string value cannot be parsed to a datetime')
             elif not isinstance(value, datetime.datetime):
@@ -612,8 +613,9 @@ class DateTimeField(Field):  # pylint: disable=abstract-method
         return unicode(value)
 
     def deserialize_from_string(self, string_value):
+        """Returns a datetime instance parsed from the numbers in the given string_value."""
         if not self.nullable or string_value is not None:
-            value = datetime.datetime.strptime(string_value, self.string_format)
+            value = datetime.datetime(*[int(x) for x in re.split(r'\D+', string_value) if x])
         return value
 
 
