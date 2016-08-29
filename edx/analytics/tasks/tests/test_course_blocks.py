@@ -77,14 +77,19 @@ class CourseBlocksApiDataTaskTest(CourseBlocksTestMixin, unittest.TestCase):
             output_root=self.output_dir,
             course_ids=course_ids_parameter,
         )
-        requirements = self.task.requires()
-        self.assertEqual(len(requirements), len(course_ids))
-        for index, task in enumerate(requirements):
-            # Ensure the task was created with course_id as an argument
-            self.assertEqual(task.arguments['course_id'], course_ids[index])
+        task = self.task.requires()
 
-            # .. and in the extend_response dict
-            self.assertEqual(task.extend_response['course_id'], course_ids[index])
+        if len(course_ids) == 0:
+            self.assertIsNone(task)
+        else:
+            self.assertIsNotNone(task)
+
+            for index, course_id in enumerate(course_ids):
+                # Ensure the task was created with course_id as an argument
+                self.assertEqual(task.arguments[index]['course_id'], course_id)
+
+                # And the inject_api_args_key is set
+                self.assertEqual(task.inject_api_args_key, '_args')
 
 
 @ddt
@@ -105,8 +110,10 @@ class CourseBlocksApiDataMapperTaskTest(CourseBlocksTestMixin, MapperTestMixin, 
         self.assert_no_map_output_for(input_data)
 
     @data(
-        ('{"course_id": "course-v1:edX+DemoX+Demo_Course", "blocks": {"abc":{}}, "root": "abc"}',
-         {"course_id": "course-v1:edX+DemoX+Demo_Course", "blocks": {"abc": {}}, "root": "abc"}),
+        ('{"_args": {"course_id": "course-v1:edX+DemoX+Demo_Course"}, '
+         '"blocks": {"abc":{}}, "root": "abc"}',
+         {"_args": {"course_id": "course-v1:edX+DemoX+Demo_Course"},
+          "blocks": {"abc": {}}, "root": "abc"}),
     )
     @unpack
     def test_map_output(self, input_data, expected_output):

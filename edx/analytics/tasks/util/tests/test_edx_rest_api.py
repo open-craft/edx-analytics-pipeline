@@ -74,15 +74,16 @@ class EdxRestApiTaskTest(unittest.TestCase):
         )
 
     @data(
-        (None, {}),
-        ('{"page": 1, "page_size": 5}', dict(page=1, page_size=5)),
-        (u'{"page": 2, "page_size": 20}', dict(page=2, page_size=20)),
-        ({"page": 3, "page_size": 25}, dict(page=3, page_size=25)),
+        (None, []),
+        ('{"page": 1, "page_size": 5}', [dict(page=1, page_size=5)]),
+        (u'{"page": 2, "page_size": 20}', [dict(page=2, page_size=20)]),
+        (u'[{"page": 3, "page_size": 30}]', [dict(page=3, page_size=30)]),
+        ({"page": 4, "page_size": 25}, [dict(page=4, page_size=25)]),
+        ([{"page": 5, "page_size": 25}, {"abc": "def"}], [dict(page=5, page_size=25), dict(abc='def')]),
     )
     @unpack
     def test_arguments(self, arguments, expected_arguments):
-        if arguments is not None:
-            self.create_task(arguments=arguments)
+        self.create_task(arguments=arguments)
         self.assertEquals(self.task.arguments, expected_arguments)
 
     @data(
@@ -164,7 +165,17 @@ class EdxRestApiTaskTest(unittest.TestCase):
             self.assertEquals(len(lines), 1)
             self.assertEquals(json.loads(lines[0].strip()), dict(exception=exception))
 
-    def test_cache_and_pagination(self):
+    @data(
+        ({}, 'pagination'),
+        ([{}], 'pagination'),
+        # Explicitly specify the different pages as a list of arguments, and disable automatic pagination
+        ([dict(page=1), dict(page=2), dict(page=3), dict(page=4)], None),
+    )
+    @unpack
+    def test_cache_and_pagination(self, arguments, pagination_key):
+        # Create the task with each allowed type of arguments
+        self.create_task(arguments=arguments, pagination_key=pagination_key)
+
         # The cache is clear, the manifest does not exist, and the task is not complete
         self.assertFalse(self.task.manifest_target.exists())
         self.assertFalse(self.task.complete())
@@ -193,7 +204,7 @@ class EdxRestApiTaskTest(unittest.TestCase):
 
                 # Create a new task with the same arguments
                 old_task = self.task
-                new_task = self.create_task()
+                new_task = self.create_task(arguments=arguments, pagination_key=pagination_key)
 
                 # Even though the task instances are different, the manifest files will be the same,
                 # because the (significant) parameters match.
@@ -217,8 +228,8 @@ class EdxRestApiTaskTest(unittest.TestCase):
             self.assertTrue(self.task.manifest_target.exists())
             self.assertTrue(self.task.complete())
 
-    def test_extend_response(self):
-        self.create_task(extend_response=dict(hi='there'))
+    def test_inject_api_args(self):
+        self.create_task(inject_api_args_key='_api_args')
 
         self.mock_api_call('POST', self.auth_url, body=dict(access_token='token', expires_in=200))
         self.mock_api_call('GET', self.api_url, body=dict(blocks=[]), content_type='application/json')
@@ -229,4 +240,5 @@ class EdxRestApiTaskTest(unittest.TestCase):
         with requirements[0].output().open() as json_input:
             lines = json_input.readlines()
             self.assertEquals(len(lines), 1)
-            self.assertEquals(json.loads(lines[0].strip()), dict(blocks=[], hi='there'))
+            self.assertEquals(json.loads(lines[0].strip()),
+                              {'blocks': [], '_api_args': {'page': 1}})

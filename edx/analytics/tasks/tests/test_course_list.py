@@ -68,7 +68,7 @@ class CourseListApiDataTaskTest(CourseListTestMixin, unittest.TestCase):
 
         # .. and passed to the required task
         requirement = self.task.requires()
-        self.assertEquals(self.task.api_args, requirement.arguments)
+        self.assertEquals([self.task.api_args], requirement.arguments)
 
 
 @ddt

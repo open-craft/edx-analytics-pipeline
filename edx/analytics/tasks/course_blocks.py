@@ -103,7 +103,7 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
     api_args = luigi.Parameter(
         config_path={'section': 'course-blocks', 'name': 'api_args'},
         default='{"depth": "all", "requested_fields": "children", "all_blocks": "true"}',
-        description='JSON structure containing the arguments passed to the course blocks API.  Course ID will be '
+        description='JSON structure containing the arguments passed to the course blocks API.  Course ID(s) will be '
                     'added. Take care if altering these arguments, as many are critical for constructing the full '
                     'course block tree.\n'
                     'If using edx-platform release prior to eucalpytus, use: \n'
@@ -157,23 +157,25 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
     def requires(self):
         """Require a EdxRestApiTask for each course_id in the given list."""
 
-        # Import EdxRestApiTask here so the EMR nodes don't need the edx_rest_api module, or its dependencies
-        from edx.analytics.tasks.util.edx_rest_api import EdxRestApiTask
-
         # Require a EdxRestApiTask for each course_id
-        requirements = []
-        for course_id in self.course_ids:
-            arguments = self.api_args.copy()
-            arguments['course_id'] = course_id
-            requirements.append(EdxRestApiTask(
+        if len(self.course_ids):
+
+            arguments = []
+            for course_id in self.course_ids:
+                api_args = self.api_args.copy()
+                api_args['course_id'] = course_id
+                arguments.append(api_args)
+
+            # Import EdxRestApiTask here so the EMR nodes don't need the edx_rest_api module, or its dependencies
+            from edx.analytics.tasks.util.edx_rest_api import EdxRestApiTask
+
+            return EdxRestApiTask(
                 resource=self.api_resource,
                 arguments=arguments,
-                extend_response=dict(course_id=course_id),
+                inject_api_args_key='_args',
                 date=self.date,
                 raise_exceptions=False,
-            ))
-
-        return requirements
+            )
 
     def mapper(self, line):
         """
@@ -189,7 +191,7 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
                 data = json.loads(line)
                 root = data.get('root')
                 blocks = data.get('blocks', {})
-                course_id = data.get('course_id')
+                course_id = data.get('_args', {}).get('course_id')
                 if course_id is not None and root is not None and root in blocks:
                     yield (course_id, data)
                 else:

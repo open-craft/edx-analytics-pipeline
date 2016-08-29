@@ -54,7 +54,7 @@ class EdxRestApiTask(PathSetTask):
 
     Once the client is authenticated, then the REST API call is made.  The REST API URL is concatenated from the
     `base_url`, `base_path`, and `resource` parameters.  Query string arguments are passed from the `arguments`
-    parameter.
+    parameter.  If `arguments` is a list, then one REST API call will be made for each set of arguments in the list.
 
     If the REST API data is paginated, and you wish to fetch all the pages, set the `pagination_key` parameter to the
     name of the field containing the pagination data.  The task will examine this data to determine if further pages can
@@ -130,6 +130,12 @@ class EdxRestApiTask(PathSetTask):
                     'If an element with this key is found, then the task will attempt to follow next links, and '
                     'multiple output files will be generated. If null, then no pagination links will be followed.'
     )
+    inject_api_args_key = luigi.Parameter(
+        config_path={'section': 'edx-rest-api', 'name': 'inject_api_args_key'},
+        default=None,
+        description='If set, inject an element into the output that contains the arguments used for the API call.'
+                    'If None, then the response output will not be modified.'
+    )
     resource = luigi.Parameter(
         description='Name of the edX REST API resource to get, e.g. "courses" or "blocks". '
                     'This name is appended to the base_path when contacting the REST API. '
@@ -138,15 +144,12 @@ class EdxRestApiTask(PathSetTask):
     )
     arguments = luigi.Parameter(
         default={},
-        description='Dictionary containing the arguments passed to the REST API call.'
+        description='Arguments to be passed to the REST API call(s).\n'
+                    '* If string, then the arguments will be JSON parsed.\n'
+                    '* If dict, then one REST API call will be made for this set of arguments.\n'
+                    '* If list, then one REST API call will be made per set of arguments in the list.\n'
                     'For options, see the specific section for your API resource: '
                     'http://edx.readthedocs.io/projects/edx-platform-api/'
-    )
-    extend_response = luigi.Parameter(
-        default=None,
-        description='Dictionary containing any data that should be added to the REST API call before storing, e.g. '
-                    '/courses/v1/blocks API response doesn\'t contain the course_id, which is useful for parsing the '
-                    'response cache later.'
     )
 
     # Override superclass to disable these parameters
@@ -168,8 +171,20 @@ class EdxRestApiTask(PathSetTask):
         log.debug('self.manifest: %s', self.manifest)
         log.debug('self.manifest_target: %s', self.manifest_target)
 
+        if self.arguments is None:
+            self.arguments = []
+
+        # Parse string arguments as JSON
         if isinstance(self.arguments, basestring):
             self.arguments = json.loads(self.arguments)
+
+        # Put single dict arguments into a list
+        if isinstance(self.arguments, dict):
+            self.arguments = [self.arguments]
+
+        # Put tuple arguments into a list
+        elif isinstance(self.arguments, tuple):
+            self.arguments = list(self.arguments,)
 
     def requires(self):
         """
@@ -213,85 +228,88 @@ class EdxRestApiTask(PathSetTask):
         client = None
         expires_at = 0
         using_cache = False
-        arguments = self.arguments.copy()
-        page = arguments.get('page', 1)
 
-        output_url, output_target = self._get_cache_target(page=page)
-        log.info('preparing target %s', output_url)
-        while output_target is not None:
+        for arg_idx, arguments in enumerate(self.arguments):
 
-            get_next_page = False
+            arguments = arguments.copy()
+            page = arguments.get('page', 1)
 
-            # Use cache file if found
-            if output_target.exists():
-                using_cache = True
-                log.info('using cached file %s', output_url)
-                yield UncheckedExternalURL(output_url)
+            output_url, output_target = self._get_cache_target(idx=arg_idx, page=page)
+            log.info('preparing target %s', output_url)
+            while output_target is not None:
 
-                # Get the next cached page if we're paginating
-                get_next_page = (self.pagination_key is not None)
+                get_next_page = False
 
-            # Don't fetch more pages if they're not already cached
-            elif using_cache:
-                output_target = None
+                # Use cache file if found
+                if output_target.exists():
+                    using_cache = True
+                    log.info('using cached file %s', output_url)
+                    yield UncheckedExternalURL(output_url)
 
-            # Create the cache file from the API response
-            else:
-                # Create an authenticated API client, if none has been created,
-                # or if the existing client is expired.
-                now = datetime.datetime.utcnow()
-                if client is None or expires_at <= now:
-                    client, expires_at = self.get_client()
+                    # Get the next cached page if we're paginating
+                    get_next_page = (self.pagination_key is not None)
 
-                # Get the API resource
-                api_call = getattr(client, self.resource)
-                arguments['page'] = page
-                try:
-                    response = api_call.get(**arguments)
-                except Exception as exc:  # pylint: disable=broad-except
-                    message = 'Error fetching API resource {}: {}'.format(arguments, exc)
-                    log.error(message)
+                # Don't fetch more pages if they're not already cached
+                elif using_cache:
+                    output_target = None
 
-                    # If configured to raise exceptions, raise one.
-                    if self.raise_exceptions:
-                        raise EdxRestApiTaskException(exc, message)
-                    else:
-                        # Write an file placeholder, containing the exception message.
-                        response = dict(exception=message)
+                # Create the cache file from the API response
+                else:
+                    # Create an authenticated API client, if none has been created,
+                    # or if the existing client is expired.
+                    now = datetime.datetime.utcnow()
+                    if client is None or expires_at <= now:
+                        client, expires_at = self.get_client()
 
-                # Add in the arguments passed to the API, in case there's critical information in there.
-                # E.g. /courses/v1/blocks response don't contain the course_id, which is necessary for parsing later.
-                if self.extend_response is not None:
-                    response.update(self.extend_response)
+                    # Get the API resource
+                    api_call = getattr(client, self.resource)
+                    arguments['page'] = page
+                    try:
+                        response = api_call.get(**arguments)
+                    except Exception as exc:  # pylint: disable=broad-except
+                        message = 'Error fetching API resource {}: {}'.format(arguments, exc)
+                        log.error(message)
 
-                # Serialize response object to a JSON string, and write to file
-                log.debug("writing cache file %s", output_url)
-                with output_target.open('w') as output_file:
-                    output_file.write("{output}\n".format(output=json.dumps(response)))
+                        # If configured to raise exceptions, raise one.
+                        if self.raise_exceptions:
+                            raise EdxRestApiTaskException(exc, message)
+                        else:
+                            # Write an file placeholder, containing the exception message.
+                            response = dict(exception=message)
 
-                # Yield the fully qualified output_url target
-                yield UncheckedExternalURL(output_url)
+                    # Add in the arguments passed to the API, in case there's critical information in there.
+                    # E.g. /courses/v1/blocks don't contain the course_id, which is necessary for parsing later.
+                    if self.inject_api_args_key is not None:
+                        response.update({self.inject_api_args_key: arguments})
 
-                # If there are more pages, follow on to the the next page
-                if isinstance(response, dict):
-                    get_next_page = (response.get(self.pagination_key, {}).get('next') is not None)
+                    # Serialize response object to a JSON string, and write to file
+                    log.debug("writing cache file %s", output_url)
+                    with output_target.open('w') as output_file:
+                        output_file.write("{output}\n".format(output=json.dumps(response)))
 
-            if get_next_page:
-                page += 1
-                log.debug("fetching page %s", page)
-                output_url, output_target = self._get_cache_target(page=page)
+                    # Yield the fully qualified output_url target
+                    yield UncheckedExternalURL(output_url)
 
-            else:
-                # Break out of the loop
-                output_target = None
+                    # If there are more pages, follow on to the the next page
+                    if isinstance(response, dict):
+                        get_next_page = (response.get(self.pagination_key, {}).get('next') is not None)
 
-    def _get_cache_target(self, page=0, suffix='.json'):
+                if get_next_page:
+                    page += 1
+                    log.debug("fetching page %s", page)
+                    output_url, output_target = self._get_cache_target(idx=arg_idx, page=page)
+
+                else:
+                    # Break out of the loop
+                    output_target = None
+
+    def _get_cache_target(self, idx=0, page=0, suffix='.json'):
         """
         Returns a url and target file located in the cache_root.
 
         The file is named from a hash of this task's significant parameters, the given page number, and suffix.
         """
-        filename = '{task_id}-{page}{suffix}'.format(task_id=str(hash(self)), page=page, suffix=suffix)
+        filename = '{task_id}-{idx}-{page}{suffix}'.format(task_id=str(hash(self)), idx=idx, page=page, suffix=suffix)
         url = url_path_join(self.cache_root, filename)
         return url, get_target_from_url(url)
 
