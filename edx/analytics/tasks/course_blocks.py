@@ -34,23 +34,21 @@ class CourseBlockRecord(Record):
     display_name = StringField(length=255, nullable=False, description='User-facing title of the block.')
     is_root = BooleanField(default=False, nullable=False,
                            description='True if the block is the course\'s root node.')
-    has_multiple_parents = BooleanField(default=False, nullable=False,
-                                        description='True if the block has more than one parent, making the course '
-                                                    'a directed acyclic graph.  If True, then parent_block_id and '
-                                                    'course_path will be null.')
-
+    is_orphan = BooleanField(default=False, nullable=False,
+                             description='True if the block has no parent nodes, but is not a root node.')
+    is_dag = BooleanField(default=False, nullable=False,
+                          description='True if the block has more than one parent, making the course '
+                                      'a Directed Acyclic Graph.  If True, then parent_block_id is null.')
     parent_block_id = StringField(length=255, nullable=True,
-                                  description='Block identifier for the block\'s parent. If null, and '
-                                              'is_root and has_multiple_parents are False, then this block has been '
-                                              'removed from the course.')
-
+                                  description='Block identifier for the block\'s parent, iff only one is found.')
     course_path = StringField(nullable=True,
                               description='Concatenated string of parent block display_name values, from '
-                                          'the root node to the parent_block_id.  Will be null if '
-                                          'has_multiple_parents.')
+                                          'the root node to the parent_block_id.  See `CourseBlocksApiDataTask` for '
+                                          'details on how this value is set for different types of blocks.')
     sort_idx = IntegerField(nullable=True,
                             description='Number indicating the position that this block holds in a course-outline '
-                                        'sorted list of blocks.   Will be null if has_multiple_parents.')
+                                        'sorted list of blocks. See `CourseBlocksApiDataTask.sort_unplaced_blocks_up` '
+                                        'for how this value is set for different types of blocks.')
 
 
 class CourseBlocksDownstreamMixin(TimestampPartitionMixin, WarehouseMixin, MapReduceJobTaskMixin):
@@ -89,13 +87,13 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
       also have `parent_block_id=None`, `course_path=''`, and `sort_idx=0`.
     * child: Blocks which have a single parent will have `parent_block_id not None`, and a `course_path` string which
       concatenates the parent block's display_name values.
-    * DAC: Blocks which have more than one parent (and thus create directed acyclic graphs, aka DACs) are marked with
-      `has_multiple_parents=True`.  Will also have `parent_block_id=None`, and have a `course_path` value configured by
+    * DAG: Blocks which have more than one parent (and thus create directed acyclic graphs, aka DAGs) are marked with
+      `is_dag=True`.  Will also have `parent_block_id=None`, and have a `course_path` value configured by
       the `multiple_parent_blocks_path` parameter.
-    * Orphan: Blocks which have no parents will have a `course_path` value configured by the `deleted_blocks_path`
-      parameter.
+    * Orphan: Blocks with no parents are marked with `is_orphan=True`.  Will have a `course_path` value configured by
+      the `deleted_blocks_path` parameter.
 
-    Orphan and DAC blocks can be sorted to the top or bottom of the list by adjusting the `sort_unplaced_blocks_up`
+    Orphan and DAG blocks can be sorted to the top or bottom of the list by adjusting the `sort_unplaced_blocks_up`
     parameter.
 
     """
@@ -130,7 +128,7 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
     deleted_blocks_path = luigi.Parameter(
         config_path={'section': 'course-blocks', 'name': 'deleted_blocks_path'},
         default='(Deleted block :)',
-        description='Mark deleted (unparented) blocks with this string in course_path.',
+        description='Mark deleted (orphan) blocks with this string in course_path.',
     )
     multiple_parent_blocks_path = luigi.Parameter(
         config_path={'section': 'course-blocks', 'name': 'multiple_parent_blocks_path'},
@@ -230,14 +228,16 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
                 block = blocks[block_id]
                 is_root = (block_id == root_id)
                 parents = block.get('parents', [])
-                has_multiple_parents = block.get('has_multiple_parents', False)
+                is_dag = block.get('is_dag', False)
+                is_orphan = False
                 course_path = u''
                 sort_idx = block.get('sort_idx', no_sort_idx)
 
-                if has_multiple_parents:
+                if is_dag:
                     course_path = unicode(self.multiple_parent_blocks_path)
                 elif not is_root:
                     if len(parents) == 0:
+                        is_orphan = True
                         course_path = unicode(self.deleted_blocks_path)
                     else:
                         for parent_id in parents:
@@ -253,7 +253,8 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
                     display_name=block.get('display_name'),
                     parent_block_id=block.get('parent_block_id'),
                     is_root=is_root,
-                    has_multiple_parents=has_multiple_parents,
+                    is_orphan=is_orphan,
+                    is_dag=is_dag,
                     course_path=course_path,
                     sort_idx=sort_idx,
                 )
@@ -292,7 +293,7 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
         children = root.get('children', [])
         more += children
 
-        if not root.get('has_multiple_parents', False):
+        if not root.get('is_dag', False):
             root['sort_idx'] = sort_idx
             sort_idx += 1
 
@@ -301,7 +302,7 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
 
             # Child has multiple parents.  Abort!
             if 'parents' in child:
-                child['has_multiple_parents'] = True
+                child['is_dag'] = True
                 del child['sort_idx']
                 del child['parent_block_id']
                 del child['parents']

@@ -122,7 +122,7 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
     """Tests the CourseBlocksApiDataTask reducer output"""
 
     # data tuple fields are given in this order:
-    # (block_id, block_type, display_name, is_root, has_multiple_parents, parent_block_id, course_path, sort_idx)
+    # (block_id,block_type,display_name,is_root,is_orphan,is_dag,parent_block_id,course_path,sort_idx)
     @data(
         (
             [{
@@ -135,7 +135,7 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
                     },
                 },
             }],
-            (('abc', 'course', 'ABC', 'True', 'False', '\\N', '', '0'),)
+            (('abc', 'course', 'ABC', 'True', 'False', 'False', '\\N', '', '0'),)
         ),
         (
             [{
@@ -182,22 +182,24 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
                     },
                 },
             }],
-            (('abc', 'block', 'ABC', 'True', 'False', '\\N', '', '0'),
-             ('def', 'block', 'DEF', 'False', 'False', 'abc', 'ABC', '1'),
-             ('stu', 'block', 'STU', 'False', 'False', 'abc', 'ABC', '2'),
-             ('mno', 'block', 'MNO', 'False', 'False', 'def', 'ABC / DEF', '4'),
-             ('pqr', 'block', 'PQR', 'False', 'False', 'mno', 'ABC / DEF / MNO', '5'),
-             ('jkl', 'block', 'JKL', 'False', 'True', '\\N', '(Multiple locations :)', '7'),
-             ('ghi', 'block', 'GHI', 'False', 'False', '\\N', '(Deleted block :)', '7'),)
+            (('abc', 'block', 'ABC', 'True', 'False', 'False', '\\N', '', '0'),
+             ('def', 'block', 'DEF', 'False', 'False', 'False', 'abc', 'ABC', '1'),
+             ('stu', 'block', 'STU', 'False', 'False', 'False', 'abc', 'ABC', '2'),
+             ('mno', 'block', 'MNO', 'False', 'False', 'False', 'def', 'ABC / DEF', '4'),
+             ('pqr', 'block', 'PQR', 'False', 'False', 'False', 'mno', 'ABC / DEF / MNO', '5'),
+             ('jkl', 'block', 'JKL', 'False', 'False', 'True', '\\N', '(Multiple locations :)', '7'),
+             ('ghi', 'block', 'GHI', 'False', 'True', 'False', '\\N', '(Deleted block :)', '7'),)
         ),
         # A "real" example, taken from the edX Demo course
         ([json.loads(load_fixture('demo_course_blocks.json'))],
-         eval(load_fixture('demo_course_blocks_reduced.tuples'))),  # pylint: disable=eval-used
+         eval(load_fixture('demo_course_blocks_reduced.tuples')),  # pylint: disable=eval-used
+         False),
     )
     @unpack
-    def test_map_output(self, input_data, expected_values):
+    def test_map_output(self, input_data, expected_tuples, inject_course_id=True):
         # Inject our course_id into the input_data, and expected_values tuples
-        expected_tuples = tuple((values[0],) + (self.course_id,) + values[1:] for values in expected_values)
+        if inject_course_id:
+            expected_tuples = tuple((values[0],) + (self.course_id,) + values[1:] for values in expected_tuples)
         self._check_output_complete_tuple(
             input_data,
             expected_tuples,
@@ -215,7 +217,7 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
                     },
                 },
             }],
-            (('abc', 'course', 'ABC', 'True', 'False', '\\N', '', '0'),)
+            (('abc', 'course', 'ABC', 'True', 'False', 'False', '\\N', '', '0'),)
         ),
         (
             [{
@@ -262,13 +264,13 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
                     },
                 },
             }],
-            (('jkl', 'block', 'JKL', 'False', 'True', '\\N', '(Multiple locations :)', '-1'),
-             ('ghi', 'block', 'GHI', 'False', 'False', '\\N', '(Deleted block :)', '-1'),
-             ('abc', 'block', 'ABC', 'True', 'False', '\\N', '', '0'),
-             ('def', 'block', 'DEF', 'False', 'False', 'abc', 'ABC', '1'),
-             ('stu', 'block', 'STU', 'False', 'False', 'abc', 'ABC', '2'),
-             ('mno', 'block', 'MNO', 'False', 'False', 'def', 'ABC / DEF', '4'),
-             ('pqr', 'block', 'PQR', 'False', 'False', 'mno', 'ABC / DEF / MNO', '5'),)
+            (('jkl', 'block', 'JKL', 'False', 'False', 'True', '\\N', '(Multiple locations :)', '-1'),
+             ('ghi', 'block', 'GHI', 'False', 'True', 'False', '\\N', '(Deleted block :)', '-1'),
+             ('abc', 'block', 'ABC', 'True', 'False', 'False', '\\N', '', '0'),
+             ('def', 'block', 'DEF', 'False', 'False', 'False', 'abc', 'ABC', '1'),
+             ('stu', 'block', 'STU', 'False', 'False', 'False', 'abc', 'ABC', '2'),
+             ('mno', 'block', 'MNO', 'False', 'False', 'False', 'def', 'ABC / DEF', '4'),
+             ('pqr', 'block', 'PQR', 'False', 'False', 'False', 'mno', 'ABC / DEF / MNO', '5'),)
         ),
     )
     @unpack
