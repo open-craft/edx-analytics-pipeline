@@ -335,13 +335,6 @@ class CourseBlocksPartitionTaskTest(CourseBlocksTestMixin, unittest.TestCase):
                 line[course_id_index] = course_id
                 output.write('{}\r\n'.format('\t'.join(line)))
 
-    def test_complete(self):
-        self.assertFalse(self.task.complete())
-
-        # Create the partition dir, and task reports complete
-        os.makedirs(self.task.output_root)
-        self.assertTrue(self.task.complete())
-
     @data(
         (['abc', 'def', 'ghi'], ('abc', 'def', 'ghi'), 0),
         (['klm', 'nop', 'nop'], ('klm', 'nop'), 3),  # removes duplicates

@@ -584,10 +584,6 @@ class ProblemResponseReportTaskReducerTest(ReducerTestMixin, ProblemResponseRepo
         self.assertEquals(self.task._record_to_string_dict(record),  # pylint: disable=protected-access
                           dict(list_field="['a', 'b']"))
 
-    def test_requires(self):
-        requirement = self.task.requires()
-        self.assertEquals(requirement.output_root, self.input_dir)
-
 
 class LatestProblemResponsePartitionTaskTest(ProblemResponseTestMixin, unittest.TestCase):
     """Tests the LatestProblemResponsePartitionTask's formatted partition value."""
@@ -627,11 +623,3 @@ class LatestProblemResponsePartitionTaskTest(ProblemResponseTestMixin, unittest.
             partition_format=self.partition_format,
         )
         self.assert_partition_value()
-
-    def test_complete(self):
-        self.create_task()
-        self.assertFalse(self.task.complete())
-
-        # Create the partition dir, and task reports complete
-        os.makedirs(self.task.output_root)
-        self.assertTrue(self.task.complete())

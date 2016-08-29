@@ -4,7 +4,7 @@ import shutil
 import tempfile
 from ddt import ddt, data, unpack
 
-from edx.analytics.tasks.course_list import CourseListApiDataTask, CourseListPartitionTask
+from edx.analytics.tasks.course_list import CourseListApiDataTask
 from edx.analytics.tasks.tests.map_reduce_mixins import MapperTestMixin, ReducerTestMixin
 from edx.analytics.tasks.tests import unittest
 
@@ -41,16 +41,6 @@ class CourseListTestMixin(object):
 @ddt
 class CourseListApiDataTaskTest(CourseListTestMixin, unittest.TestCase):
     """Tests the CourseListApiDataTask basic functions. """
-
-    def test_complete(self):
-        self.create_task()
-        self.assertFalse(self.task.complete())
-
-        # Create the output_root/_SUCCESS file
-        with open(os.path.join(self.output_dir, '_SUCCESS'), 'w') as success:
-            success.write('')
-        self.assertTrue(self.task.output().exists())
-        self.assertTrue(self.task.complete())
 
     @data(
         (None, dict(page_size=100)),
@@ -154,23 +144,3 @@ class CourseListApiDataReducerTaskTest(CourseListTestMixin, ReducerTestMixin, un
             input_data,
             expected_tuples,
         )
-
-
-class CourseListPartitionTaskTest(CourseListTestMixin, unittest.TestCase):
-    """Tests the CourseListPartitionTask completion status."""
-    task_class = CourseListPartitionTask
-
-    def create_task(self, **kwargs):
-        """Create the task"""
-        self.task = self.task_class(
-            warehouse_path=self.output_dir,
-            **kwargs
-        )
-
-    def test_complete(self):
-        self.create_task()
-        self.assertFalse(self.task.complete())
-
-        # Create the partition dir, and task reports complete
-        os.makedirs(self.task.output_root)
-        self.assertTrue(self.task.complete())
