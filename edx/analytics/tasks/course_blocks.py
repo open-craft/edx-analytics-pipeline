@@ -287,6 +287,12 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
         """
         root = blocks.get(root_id, {})
 
+        # If we've seen this block before, then don't bother to traverse again.
+        if root.get('visited', False):
+            return root.get('sort_idx')
+        else:
+            root['visited'] = True
+
         if more is None:
             more = []
 
