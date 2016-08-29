@@ -61,11 +61,11 @@ class CourseBlocksDownstreamMixin(TimestampPartitionMixin, WarehouseMixin, MapRe
     partition_format = luigi.Parameter(
         config_path={'section': 'course_blocks', 'name': 'partition_format'},
         default='%Y%m%d',
-        description="Format string for the course blocks table partition's `date` parameter.n"
-                    "Must result in a filename-safe string, or your partitions will fail to be created.\n"
-                    "The default value of '%Y%m%d' changes daily, and so causes a new course partition to to be "
-                    "created once a day.  For example, use '%Y%m%dT%H' to update hourly, though beware of load on the"
-                    "edX REST API.  See strftime for options.",
+        description='Format string for the course blocks table partition\'s `date` parameter. '
+                    'Must result in a filename-safe string, or your partitions will fail to be created.\n'
+                    'The default value of "%Y%m%d" changes daily, and so causes a new course partition to to be '
+                    'created once a day.  For example, use "%Y%m%dT%H" to update hourly, though beware of load on the'
+                    'edX REST API.  See strftime for options.',
     )
 
 
