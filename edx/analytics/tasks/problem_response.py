@@ -18,7 +18,7 @@ from edx.analytics.tasks.decorators import workflow_entry_point
 from edx.analytics.tasks.util.hive import BareHiveTableTask, HivePartitionTask, hive_database_name
 from edx.analytics.tasks.util.opaque_key_util import get_filename_safe_course_id
 from edx.analytics.tasks.util.record import (
-    Record, StringField, StringListField, IntegerField, DateTimeField, FloatField, BooleanField,
+    Record, StringField, DelimitedStringField, IntegerField, DateTimeField, FloatField, BooleanField,
 )
 from edx.analytics.tasks.course_list import TimestampPartitionMixin, CourseListPartitionTask
 from edx.analytics.tasks.course_blocks import CourseBlocksPartitionTask
@@ -47,7 +47,7 @@ class ProblemResponseRecord(Record):
     correct = BooleanField(nullable=True, description='True if all answers are correct; '
                                                       'False if any answers are not correct; '
                                                       'None if any answers have unknown correctness.')
-    answer = StringListField(description='List of answers the user chose for the question.')
+    answer = DelimitedStringField(description='List of answers the user chose for the question.')
     total_attempts = IntegerField(description='Total number of attempts the user has made on the problem.')
     first_attempt_date = DateTimeField(description='date/time of the first attempt the user has made on the problem.')
     last_attempt_date = DateTimeField(description='date/time of the last attempt the user has made on the problem.')
