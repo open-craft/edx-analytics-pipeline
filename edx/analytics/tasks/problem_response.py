@@ -456,6 +456,11 @@ class ProblemResponseLocationPartitionTask(ProblemResponsePartitionTask):
         default=' / ',
         description='String used to delimit the course path sections when assembling the full block location.',
     )
+    deleted_blocks_path = luigi.Parameter(
+        config_path={'section': 'course-blocks', 'name': 'deleted_blocks_path'},
+        default='(Deleted block :)',
+        description='Mark deleted (unparented) blocks with this string in course_path.',
+    )
 
     def __init__(self, *args, **kwargs):
         super(ProblemResponseLocationPartitionTask, self).__init__(*args, **kwargs)
@@ -478,7 +483,7 @@ class ProblemResponseLocationPartitionTask(ProblemResponsePartitionTask):
                 pr.total_attempts,
                 pr.first_attempt_date,
                 pr.last_attempt_date,
-                CONCAT(COALESCE(cb.course_path, ''), '{path_delimiter}', pr.problem) as location,
+                CONCAT(COALESCE(cb.course_path, '{deleted_blocks_path}'), '{path_delimiter}', pr.problem) as location,
                 COALESCE(cb.sort_idx, 0) as sort_idx
             FROM {problem_response_table} pr
             LEFT OUTER JOIN {course_blocks_table} cb
@@ -490,6 +495,7 @@ class ProblemResponseLocationPartitionTask(ProblemResponsePartitionTask):
             table=self.hive_table_task.table,
             partition=self.partition,
             path_delimiter=self.path_delimiter,
+            deleted_blocks_path=self.deleted_blocks_path,
             if_not_exists='' if self.overwrite else 'IF NOT EXISTS',
             problem_response_table=self.problem_response_partition.hive_table_task.table,
             problem_response_partition="{}='{}'".format(self.problem_response_partition.hive_table_task.partition_by,
