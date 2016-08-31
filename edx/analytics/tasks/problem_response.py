@@ -624,7 +624,8 @@ class ProblemResponseReportTask(ProblemResponseDataMixin,
         writer = csv.DictWriter(output_file, self.report_fields)
         writer.writeheader()
 
-        for record_values in values:
+        # Sort records on sort_idx
+        for record_values in sorted(values, key=lambda x: int(x[-1])):
             # Decode the record from the tuple
             record = ProblemResponseRecord.from_string_tuple(record_values)
 
