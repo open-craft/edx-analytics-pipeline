@@ -215,7 +215,25 @@ class AcceptanceTestCase(unittest.TestCase):
             'module-engagement': {
                 'alias': elasticsearch_alias
             },
-            'elasticsearch': {}
+            'elasticsearch': {},
+            'problem-response': {
+                'report_fields': '["username","problem_id","answer_id","location","question","score","max_score",'
+                                 '"correct","answer","total_attempts","first_attempt_date","last_attempt_date"]',
+                'report_field_list_delimiter': '"|"',
+                'report_field_datetime_format': '%Y-%m-%dT%H:%M:%SZ',
+                'partition_format': '%Y%m%dT%H',
+            },
+            'edx-rest-api': {
+                'client_id': 'oauth_id',
+                'client_secret': 'oauth_secret',
+                'oauth_username': 'test_user',
+                'oauth_password': 'password',
+                'base_url': 'http://acceptance.test',
+                'cache_root': url_path_join(self.test_src, 'edx-rest-api-cache'),
+            },
+            'course-blocks': {
+                'load_blocks_marker': url_path_join(self.test_out, 'course-blocks-marker'),
+            },
         }
         if 'vertica_creds_url' in self.config:
             task_config_override['vertica-export'] = {
