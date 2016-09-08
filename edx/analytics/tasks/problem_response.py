@@ -650,8 +650,8 @@ class ProblemResponseReportTask(ProblemResponseDataMixin,
                 if self.report_field_datetime_format is not None:
                     value = value.strftime(self.report_field_datetime_format)
 
-            # Flatten list fields if configured
-            elif isinstance(value, list):
+            # Flatten tuple/list fields if configured
+            elif isinstance(value, (list,tuple)):
                 if self.report_field_list_delimiter is not None:
                     value = self.report_field_list_delimiter.join(value)
 

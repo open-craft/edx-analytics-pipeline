@@ -486,10 +486,7 @@ class ProblemResponseReportTestMixin(ProblemResponseTestMixin, unittest.TestCase
                     ]
 
                 inputs[course_id].append(input_row)
-
-                # Answer field will be rendered to a tuple of strings
-                expected_row = input_row[0:9] + ('"(u\'{}\',)"'.format(input_row[9]),) + input_row[10:]
-                expected[course_id].append(','.join(expected_row))
+                expected[course_id].append(','.join(input_row))
 
         return inputs, expected
 
