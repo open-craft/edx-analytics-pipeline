@@ -651,7 +651,7 @@ class ProblemResponseReportTask(ProblemResponseDataMixin,
                     value = value.strftime(self.report_field_datetime_format)
 
             # Flatten tuple/list fields if configured
-            elif isinstance(value, (list,tuple)):
+            elif isinstance(value, (list, tuple)):
                 if self.report_field_list_delimiter is not None:
                     value = self.report_field_list_delimiter.join(value)
 
@@ -699,6 +699,7 @@ class ProblemResponseReportWorkflow(ProblemResponseTableMixin,
             interval=self.interval,
             interval_start=self.interval_start,
             interval_end=self.interval_end,
+            date=self.date,
             source=self.source,
             pattern=self.pattern,
             overwrite=self.hive_overwrite,
@@ -707,14 +708,15 @@ class ProblemResponseReportWorkflow(ProblemResponseTableMixin,
 
         # Initialize the course list partition task, partitioned on date
         course_list_task = CourseListPartitionTask(
+            date=self.date,
             **kwargs
         )
 
         # Initialize the all course blocks data task, feeding
         # in the course_list_task's output as input.
         course_blocks_task = CourseBlocksPartitionTask(
-            date=problem_response_task.date,
             input_root=course_list_task.output_root,
+            date=self.date,
             **kwargs
         )
 
@@ -722,6 +724,7 @@ class ProblemResponseReportWorkflow(ProblemResponseTableMixin,
         problem_response_location_task = ProblemResponseLocationPartitionTask(
             problem_response_partition=problem_response_task,
             course_blocks_partition=course_blocks_task,
+            date=self.date,
             overwrite=self.hive_overwrite,
             **kwargs
         )
