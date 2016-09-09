@@ -470,7 +470,7 @@ class ProblemResponseReportTestMixin(ProblemResponseTestMixin, unittest.TestCase
                     'question {}'.format(idx),
                     '4.0',
                     '10.0',
-                    'True',
+                    'False',
                     'answer {}'.format(idx),
                     '20',
                     self.DATE,

@@ -135,7 +135,7 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
                     },
                 },
             }],
-            (('abc', 'course', 'ABC', 'True', 'False', 'False', '\\N', '', '0'),)
+            (('abc', 'course', 'ABC', '1', '0', '0', '\\N', '', '0'),)
         ),
         (
             [{
@@ -182,13 +182,13 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
                     },
                 },
             }],
-            (('abc', 'block', 'ABC', 'True', 'False', 'False', '\\N', '', '0'),
-             ('def', 'block', 'DEF', 'False', 'False', 'False', 'abc', 'ABC', '1'),
-             ('stu', 'block', 'STU', 'False', 'False', 'False', 'abc', 'ABC', '2'),
-             ('mno', 'block', 'MNO', 'False', 'False', 'False', 'def', 'ABC / DEF', '4'),
-             ('pqr', 'block', 'PQR', 'False', 'False', 'False', 'mno', 'ABC / DEF / MNO', '5'),
-             ('jkl', 'block', 'JKL', 'False', 'False', 'True', '\\N', '(Multiple locations :)', '7'),
-             ('ghi', 'block', 'GHI', 'False', 'True', 'False', '\\N', '(Deleted block :)', '7'),)
+            (('abc', 'block', 'ABC', '1', '0', '0', '\\N', '', '0'),
+             ('def', 'block', 'DEF', '0', '0', '0', 'abc', 'ABC', '1'),
+             ('stu', 'block', 'STU', '0', '0', '0', 'abc', 'ABC', '2'),
+             ('mno', 'block', 'MNO', '0', '0', '0', 'def', 'ABC / DEF', '4'),
+             ('pqr', 'block', 'PQR', '0', '0', '0', 'mno', 'ABC / DEF / MNO', '5'),
+             ('jkl', 'block', 'JKL', '0', '0', '1', '\\N', '(Multiple locations :)', '7'),
+             ('ghi', 'block', 'GHI', '0', '1', '0', '\\N', '(Deleted block :)', '7'),)
         ),
         # A "real" example, taken from the edX Demo course
         ([json.loads(load_fixture('demo_course_blocks.json'))],
@@ -217,7 +217,7 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
                     },
                 },
             }],
-            (('abc', 'course', 'ABC', 'True', 'False', 'False', '\\N', '', '0'),)
+            (('abc', 'course', 'ABC', '1', '0', '0', '\\N', '', '0'),)
         ),
         (
             [{
@@ -264,13 +264,13 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
                     },
                 },
             }],
-            (('jkl', 'block', 'JKL', 'False', 'False', 'True', '\\N', '(Multiple locations :)', '-1'),
-             ('ghi', 'block', 'GHI', 'False', 'True', 'False', '\\N', '(Deleted block :)', '-1'),
-             ('abc', 'block', 'ABC', 'True', 'False', 'False', '\\N', '', '0'),
-             ('def', 'block', 'DEF', 'False', 'False', 'False', 'abc', 'ABC', '1'),
-             ('stu', 'block', 'STU', 'False', 'False', 'False', 'abc', 'ABC', '2'),
-             ('mno', 'block', 'MNO', 'False', 'False', 'False', 'def', 'ABC / DEF', '4'),
-             ('pqr', 'block', 'PQR', 'False', 'False', 'False', 'mno', 'ABC / DEF / MNO', '5'),)
+            (('jkl', 'block', 'JKL', '0', '0', '1', '\\N', '(Multiple locations :)', '-1'),
+             ('ghi', 'block', 'GHI', '0', '1', '0', '\\N', '(Deleted block :)', '-1'),
+             ('abc', 'block', 'ABC', '1', '0', '0', '\\N', '', '0'),
+             ('def', 'block', 'DEF', '0', '0', '0', 'abc', 'ABC', '1'),
+             ('stu', 'block', 'STU', '0', '0', '0', 'abc', 'ABC', '2'),
+             ('mno', 'block', 'MNO', '0', '0', '0', 'def', 'ABC / DEF', '4'),
+             ('pqr', 'block', 'PQR', '0', '0', '0', 'mno', 'ABC / DEF / MNO', '5'),)
         ),
     )
     @unpack
