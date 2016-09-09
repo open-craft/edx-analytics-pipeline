@@ -1,6 +1,7 @@
 """Test problem response data tasks."""
 
 import os
+import re
 import json
 import random
 import shutil
@@ -192,27 +193,27 @@ class LatestProblemResponseTaskReducerTest(ProblemResponseTestMixin, ReducerTest
         #   Lists of answers are concatenated.
         # * correct: True, False, or None
         self.attempts = [
-            dict(answer='Ions in the atmosphere',
+            dict(answer=('Ions in the atmosphere',),
                  correct=True),
             dict(answer='Reflection off\nthe    ocean',
-                 expected_answer='Reflection off the ocean',
+                 expected_answer=('Reflection off the ocean',),
                  correct=False),
             dict(answer='Refraction of light <choicehint title="this is a multiline,\n'
-                 r'empty choicehint."\>',
-                 expected_answer='Refraction of light ',
+                        r'empty choicehint."\>',
+                 expected_answer=('Refraction of light ',),
                  correct=True),
             dict(answer='Little dancing fairies <choicehint label="incorrect">This is a\n'
                         'multiline choicehint</choicehint>',
-                 expected_answer='Little dancing fairies ',
+                 expected_answer=('Little dancing fairies ',),
                  correct=False),
-            dict(answer=['Ions in the atmosphere', 'Refraction of light'],
-                 expected_answer='Ions in the atmosphere\0Refraction of light',
+            dict(answer=('Ions in the atmosphere', 'Refraction of light'),
                  correct=True),
-            dict(answer=['Little dancing fairies <choicehint>What if fairies were ions?</choicehint>',
-                         'Refraction of light <choicehint selected="" title="Off fairies!" \\>'],
-                 expected_answer='Little dancing fairies \0Refraction of light ',
+            dict(answer=('Little dancing fairies <choicehint>What if fairies were ions?</choicehint>',
+                         'Refraction of light <choicehint selected="" title="Off fairies!" \\>'),
+                 expected_answer=('Little dancing fairies ', 'Refraction of light '),
                  correct=False),
             dict(answer='It isn\'t blue.',
+                 expected_answer=('It isn\'t blue.',),
                  correct=None),
         ]
 
@@ -325,11 +326,11 @@ class LatestProblemResponseTaskReducerLegacyKeysTest(InitializeLegacyKeysMixin, 
     pass
 
 
+@ddt
 class LatestProblemResponseDataTaskTest(ProblemResponseTestMixin, ReducerTestMixin, unittest.TestCase):
     """Test the properties of the LatestProblemResponseDataTask."""
     task_class = LatestProblemResponseDataTask
     DATE = '2013-12-17'
-    TEST_STRING = "Choice  \t\n\r<choicehint>Hint</choicehint>"
 
     def create_task(self, *args, **kwargs):
         """Initialize the test task with the given kwargs."""
@@ -355,30 +356,30 @@ class LatestProblemResponseDataTaskTest(ProblemResponseTestMixin, ReducerTestMix
         import html5lib
         self.assertIn(html5lib, self.task.extra_modules())
 
-    def test_default_clean_text_regex(self):
-        import re
-        regex = re.compile('')
-        self.assertEquals(type(self.task.clean_text_regex), type(regex))
+    @data(
+        (r'(?:<choicehint.*?</choicehint>)|(?:<choicehint.*?\>)', 'Choice ', 'Choice '),
+        (r'(?:<choicehint.*?</choicehint>)|(?:<choicehint.*?\>)', 'Choice <choicehint>Hint</choicehint>', 'Choice '),
+        (r'(?:<choicehint.*?</choicehint>)|(?:<choicehint.*?\>)', "Choice  \t\n\r<choicehint>Hint</choicehint>",
+         'Choice '),
+        (None, 'Choice <choicehint>Hint</choicehint>', 'Choice <choicehint>Hint</choicehint>'),
+    )
+    @unpack
+    def test_clean_text_regex(self, clean_text_regex, input_str, expected_str):
+        if isinstance(clean_text_regex, basestring):
+            regex = re.compile(clean_text_regex)
+        else:
+            regex = clean_text_regex
+        self.create_task(clean_text_regex=regex)
 
-        clean_string = 'Choice '
         self.assertEquals(
-            self.task._clean_string(self.TEST_STRING),  # pylint: disable=protected-access
-            clean_string)
+            self.task._clean_string(input_str),  # pylint: disable=protected-access
+            expected_str)
         self.assertEquals(
-            self.task._clean_string([self.TEST_STRING]),  # pylint: disable=protected-access
-            [clean_string])
-
-    def test_no_clean_text_regex(self):
-        self.create_task(clean_text_regex=None)
-        self.assertIsNone(self.task.clean_text_regex)
-
-        clean_string = 'Choice <choicehint>Hint</choicehint>'
+            self.task._clean_string([input_str]),  # pylint: disable=protected-access
+            (expected_str,))
         self.assertEquals(
-            self.task._clean_string(self.TEST_STRING),  # pylint: disable=protected-access
-            clean_string)
-        self.assertEquals(
-            self.task._clean_string([self.TEST_STRING]),  # pylint: disable=protected-access
-            [clean_string])
+            self.task._clean_string((input_str,)),  # pylint: disable=protected-access
+            (expected_str,))
 
 
 class LatestProblemResponseTableTaskTest(ReducerTestMixin, unittest.TestCase):

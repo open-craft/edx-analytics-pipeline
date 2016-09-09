@@ -272,7 +272,7 @@ class LatestProblemResponseDataTask(EventLogSelectionMixin,
                 score=answer.get('grade', 0),
                 max_score=answer.get('max_grade', 0),
                 correct=answer.get('correct', None),
-                answer=answer.get('answer', ''),
+                answer=answer.get('answer', ()),
                 total_attempts=total_attempts,
                 first_attempt_date=first_attempt_date,
                 last_attempt_date=last_attempt_date,
@@ -283,13 +283,13 @@ class LatestProblemResponseDataTask(EventLogSelectionMixin,
             yield latest_response_record.to_string_tuple()
 
     def _clean_string(self, string):
-        """Remove unwanted characters from the given string or list of strings."""
+        """Remove unwanted characters from the given string or tuple/list of strings."""
 
-        # Handle lists of strings
+        # Handle tuples, lists of strings
         if isinstance(string, (list, tuple)):
-            for idx, substring in enumerate(string):
-                string[idx] = self._clean_string(substring)
-            return string
+            return tuple(
+                self._clean_string(substring) for idx, substring in enumerate(string)
+            )
 
         # Replace multiple whitespaces (including newlines) with a single space
         string = re.sub(r'\s+', r' ', string)
@@ -341,7 +341,9 @@ class LatestProblemResponseDataTask(EventLogSelectionMixin,
                 correct = None
 
             # Answer text may have been given, or maybe just the answer IDs
-            answer = answer_data.get('answer', answer_data.get('answer_value_id', ''))
+            answer = self._clean_string(answer_data.get('answer', answer_data.get('answer_value_id', '')))
+            if not isinstance(answer, tuple):
+                answer = (answer,)
 
             # Yield each processed submission
             yield dict(
@@ -352,7 +354,7 @@ class LatestProblemResponseDataTask(EventLogSelectionMixin,
                 grade=answer_data.get('grade'),
                 max_grade=answer_data.get('max_grade'),
                 correct=correct,
-                answer=self._clean_string(answer),
+                answer=answer,
             )
 
     def output(self):
@@ -461,9 +463,6 @@ class ProblemResponseLocationPartitionTask(ProblemResponsePartitionTask):
         default='(Deleted block :)',
         description='Mark deleted (unparented) blocks with this string in course_path.',
     )
-
-    def __init__(self, *args, **kwargs):
-        super(ProblemResponseLocationPartitionTask, self).__init__(*args, **kwargs)
 
     def query(self):
         query = """
