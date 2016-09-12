@@ -174,6 +174,7 @@ class AcceptanceTestCase(unittest.TestCase):
         otto_database_name = 'acceptance_otto_' + database_name
         elasticsearch_alias = 'alias_test_' + self.identifier
         self.warehouse_path = url_path_join(self.test_root, 'warehouse')
+        self.edx_rest_api_cache_root = url_path_join(self.test_src, 'edx-rest-api-cache')
         task_config_override = {
             'hive': {
                 'database': database_name,
@@ -229,7 +230,7 @@ class AcceptanceTestCase(unittest.TestCase):
                 'oauth_username': 'test_user',
                 'oauth_password': 'password',
                 'base_url': 'http://acceptance.test',
-                'cache_root': url_path_join(self.test_src, 'edx-rest-api-cache'),
+                'cache_root': self.edx_rest_api_cache_root,
             },
             'course-blocks': {
                 'load_blocks_marker': url_path_join(self.test_out, 'course-blocks-marker'),
