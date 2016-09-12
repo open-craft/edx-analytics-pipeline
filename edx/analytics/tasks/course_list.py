@@ -242,6 +242,7 @@ class CourseListPartitionTask(CourseListDownstreamMixin, HivePartitionTask):
     @property
     def data_task(self):
         return CourseListApiDataTask(
+            date=self.date,
             output_root=self.output_root,
             overwrite=self.overwrite,
             n_reduce_tasks=self.n_reduce_tasks,
