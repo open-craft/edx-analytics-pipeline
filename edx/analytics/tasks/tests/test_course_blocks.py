@@ -10,7 +10,6 @@ from ddt import ddt, data, unpack
 from edx.analytics.tasks.course_blocks import (
     CourseBlocksApiDataTask, CourseBlocksPartitionTask,
 )
-from edx.analytics.tasks.url import get_target_from_url
 from edx.analytics.tasks.tests import unittest
 from edx.analytics.tasks.tests.map_reduce_mixins import MapperTestMixin, ReducerTestMixin
 from edx.analytics.tasks.tests.fixtures.helpers import load_fixture
@@ -289,12 +288,6 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
 class CourseBlocksInputTask(luigi.Task):
     """Use for the CourseBlocksTask.input_task parameter."""
     output_root = luigi.Parameter()
-
-    def output(self):
-        return get_target_from_url(self.output_root)
-
-    def complete(self):
-        return self.output().exists()
 
 
 @ddt
