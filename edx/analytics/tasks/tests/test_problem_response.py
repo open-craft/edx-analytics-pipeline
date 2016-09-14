@@ -228,7 +228,7 @@ class LatestProblemResponseTaskReducerTest(ProblemResponseTestMixin, ReducerTest
         inputs = []
         for idx, attempt in enumerate(attempts):
             answer_id = 'answer_{}'.format(idx)
-            time = '2013-01-01T00:{0:02d}:00.0'.format(idx)
+            time = '2013-01-01 00:{0:02d}:00.0'.format(idx)
             correctness = None
             if attempt['correct'] is None:
                 correctness = 'unknown'
@@ -279,6 +279,7 @@ class LatestProblemResponseTaskReducerTest(ProblemResponseTestMixin, ReducerTest
                 ))
 
         # Construct the expected problem response record
+        date_field = DateTimeField()
         expected = ProblemResponseRecord(
             course_id=self.course_id,
             answer_id=latest_attempt['answer_id'],
@@ -291,8 +292,8 @@ class LatestProblemResponseTaskReducerTest(ProblemResponseTestMixin, ReducerTest
             correct=latest_attempt['correct'],
             answer=latest_attempt.get('expected_answer', latest_attempt.get('answer')),
             total_attempts=total_attempts,
-            first_attempt_date=first_attempt_date,
-            last_attempt_date=latest_attempt['last_attempt_date'],
+            first_attempt_date=date_field.deserialize_from_string(first_attempt_date),
+            last_attempt_date=date_field.deserialize_from_string(latest_attempt['last_attempt_date']),
             location='',
             sort_idx=0,
         )
@@ -514,7 +515,7 @@ class ProblemResponseReportTaskReducerTest(ReducerTestMixin, ProblemResponseRepo
     Tests the problem response report reducer.
     """
     task_class = ProblemResponseReportTask
-    DATE = '2013-07-03T00:00:00.000000'
+    DATE = '2013-07-03 00:00:00.000000'
 
     def setUp(self):
         self.setup_dirs()

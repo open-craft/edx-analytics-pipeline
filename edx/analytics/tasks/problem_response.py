@@ -261,6 +261,7 @@ class LatestProblemResponseDataTask(EventLogSelectionMixin,
         total_attempts = len(values)
 
         # Generate a single response record from each answer submission
+        date_time_field = DateTimeField()
         for answer in self.get_answer_data(latest_response):
             latest_response_record = ProblemResponseRecord(
                 course_id=course_id,
@@ -274,8 +275,8 @@ class LatestProblemResponseDataTask(EventLogSelectionMixin,
                 correct=answer.get('correct', None),
                 answer=answer.get('answer', ()),
                 total_attempts=total_attempts,
-                first_attempt_date=first_attempt_date,
-                last_attempt_date=last_attempt_date,
+                first_attempt_date=date_time_field.deserialize_from_string(first_attempt_date),
+                last_attempt_date=date_time_field.deserialize_from_string(last_attempt_date),
                 location='',
                 sort_idx=0,
             )
