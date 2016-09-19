@@ -4,15 +4,22 @@ import os
 import json
 import shutil
 import tempfile
+import logging
+from urllib import urlencode
 import luigi
+from requests.exceptions import HTTPError
+import httpretty
 from ddt import ddt, data, unpack
 
 from edx.analytics.tasks.course_blocks import (
-    CourseBlocksApiDataTask, CourseBlocksPartitionTask,
+    CourseBlocksApiDataTask, CourseBlocksPartitionTask, PullCourseBlocksApiData,
 )
 from edx.analytics.tasks.tests import unittest
 from edx.analytics.tasks.tests.map_reduce_mixins import MapperTestMixin, ReducerTestMixin
 from edx.analytics.tasks.tests.fixtures.helpers import load_fixture
+
+
+log = logging.getLogger(__name__)
 
 
 class CourseBlocksTestMixin(object):
@@ -76,14 +83,9 @@ class CourseBlocksApiDataTaskTest(CourseBlocksTestMixin, unittest.TestCase):
             output_root=self.output_dir,
             course_ids=course_ids_parameter,
         )
-        requirements = self.task.requires()
-        self.assertEqual(len(requirements), len(course_ids))
-        for index, task in enumerate(requirements):
-            # Ensure the task was created with course_id as an argument
-            self.assertEqual(task.arguments['course_id'], course_ids[index])
-
-            # .. and in the extend_response dict
-            self.assertEqual(task.extend_response['course_id'], course_ids[index])
+        # Ensure the required task was created with the course_ids list
+        required = self.task.requires()
+        self.assertEqual(required.course_ids, course_ids)
 
 
 @ddt
@@ -91,9 +93,6 @@ class CourseBlocksApiDataMapperTaskTest(CourseBlocksTestMixin, MapperTestMixin, 
     """Tests the CourseBlocksApiDataTask mapper output"""
 
     @data(
-        '',
-        None,
-        'abc',
         '{"abc": "def"}',
         '{"blocks": {}}',
         '{"blocks": {}, "root": ""}',
@@ -369,3 +368,137 @@ class CourseBlocksPartitionTaskTest(CourseBlocksTestMixin, unittest.TestCase):
 
         # And the course_ids have been passed along to the data task
         self.assertEqual(requirements[0].course_ids, expected_course_ids)
+
+
+@ddt
+class PullCourseBlocksApiDataTest(unittest.TestCase):
+    """Tests the PullCourseBlocksApiData task."""
+
+    task_class = PullCourseBlocksApiData
+    auth_url = 'http://localhost:8000/oauth2/access_token/'
+    api_url = 'http://localhost:8000/api/courses/v1/blocks/'
+    course_id = 'course-v1:edX+DemoX+Demo_Course'
+
+    def setUp(self):
+        super(PullCourseBlocksApiDataTest, self).setUp()
+        self.setup_dirs()
+        self.create_task()
+        httpretty.reset()
+
+    def create_task(self, **kwargs):
+        """Create the task."""
+        args = dict(
+            api_root_url=self.api_url,
+            warehouse_path=self.cache_dir,
+            course_ids=(self.course_id,),
+        )
+        args.update(**kwargs)
+        self.task = self.task_class(**args)
+        return self.task
+
+    def setup_dirs(self):
+        """Create temp cache dir."""
+        self.temp_rootdir = tempfile.mkdtemp()
+        self.cache_dir = os.path.join(self.temp_rootdir, "cache")
+        os.mkdir(self.cache_dir)
+        self.addCleanup(self.cleanup, self.temp_rootdir)
+
+    def cleanup(self, dirname):
+        """Remove the temp directory only if it exists."""
+        if os.path.exists(dirname):
+            shutil.rmtree(dirname)
+
+    def mock_api_call(self, method, url, status_code=200, body='', **kwargs):
+        """Register the given URL, and send data as a JSON string."""
+        if isinstance(body, dict):
+            body = json.dumps(body)
+
+        log.debug('register_uri(%s, %s, %s, %s, %s)', method, url, body, status_code, kwargs)
+        httpretty.enable()
+        httpretty.register_uri(
+            method, url, body=body, status=status_code, **kwargs
+        )
+
+    @data(
+        (404, None),
+        (403, HTTPError),
+        (500, HTTPError),
+    )
+    @unpack
+    def test_errors(self, status_code, expected_exception):
+        course_ids = ('abc', 'def')
+        self.create_task(course_ids=course_ids)
+        self.mock_api_call('POST', self.auth_url, body=dict(access_token='token', expires_in=2000))
+        params = dict(depth="all", requested_fields="children", all_blocks="true")
+
+        # Mock a 200 API call
+        params['course_id'] = course_ids[0]
+        self.mock_api_call('GET', '{}?{}'.format(self.api_url, urlencode(params)),
+                           body="{}",
+                           status_code=200,
+                           match_querystring=True,
+                           content_type='application/json')
+
+        # Mock the error API call
+        params['course_id'] = course_ids[1]
+        self.mock_api_call('GET', '{}?{}'.format(self.api_url, urlencode(params)),
+                           body="{}",
+                           status_code=status_code,
+                           match_querystring=True,
+                           content_type='application/json')
+
+        if expected_exception:
+            with self.assertRaises(expected_exception):
+                self.task.run()
+                self.assertFalse(self.task.complete())
+        else:
+            self.task.run()
+            self.assertTrue(self.task.complete())
+            with self.task.output().open() as json_input:
+                lines = json_input.readlines()
+                self.assertEquals(len(lines), 1)
+
+    def test_cache(self):
+        # The cache is clear, and the task is not complete
+        self.assertFalse(self.task.complete())
+
+        # Mock the API call
+        body = dict(blocks={'abc': {}}, root='abc')
+        for mock_api in (True, False):
+
+            # First, we mock the API calls, to populate the cache
+            if mock_api:
+                params = {'course_id': self.course_id, 'all_blocks': 'true', 'depth': 'all',
+                          'requested_fields': 'children'}
+                self.mock_api_call('POST', self.auth_url, body=dict(access_token='token', expires_in=2000))
+
+                # API results are not paginated
+                self.mock_api_call('GET', '{}?{}'.format(self.api_url, urlencode(params)),
+                                   body=body,
+                                   content_type='application/json')
+
+                self.task.run()
+                self.assertTrue(self.task.complete())
+
+            # Next, we clear the API mocks, and create a new task, and read from the cache
+            else:
+                httpretty.reset()
+
+                # Create a new task with the same arguments - is already complete
+                old_task = self.task
+                new_task = self.create_task()
+                self.assertTrue(new_task.complete())
+
+        # Ensure the data returned by the first tasks matches the expected data
+        with old_task.output().open() as json_input:
+            lines = json_input.readlines()
+            self.assertEquals(len(lines), 1)
+
+            # Records are annotated with Course ID
+            body['course_id'] = self.course_id
+            self.assertEquals(json.loads(lines[0]), body)
+
+        # Ensure the data returned by the two tasks is the same
+        with new_task.output().open() as json_input:
+            cache_lines = json_input.readlines()
+            self.assertEquals(lines, cache_lines)

@@ -8,9 +8,11 @@ import logging
 import json
 import datetime
 import luigi
+from requests.exceptions import HTTPError
 
 from edx.analytics.tasks.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin
 from edx.analytics.tasks.url import get_target_from_url, url_path_join
+from edx.analytics.tasks.util.edx_api_client import EdxApiClient
 from edx.analytics.tasks.util.hive import (
     WarehouseMixin, BareHiveTableTask, HivePartitionTask,
 )
@@ -51,7 +53,7 @@ class CourseBlockRecord(Record):
                                         'for how this value is set for different types of blocks.')
 
 
-class CourseBlocksDownstreamMixin(TimestampPartitionMixin, WarehouseMixin, MapReduceJobTaskMixin):
+class CourseBlocksDownstreamMixin(TimestampPartitionMixin, WarehouseMixin, OverwriteOutputMixin):
     """Common parameters used by the Course Blocks Data and Partition tasks."""
 
     course_ids = luigi.Parameter(
@@ -69,20 +71,64 @@ class CourseBlocksDownstreamMixin(TimestampPartitionMixin, WarehouseMixin, MapRe
     )
 
 
-class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin, MapReduceJobTask):
+class PullCourseBlocksApiData(CourseBlocksDownstreamMixin, luigi.Task):
     """
-    This task fetches the course blocks data from the Course Blocks edX REST API. See the EdxRestApiTask to configure
-    REST API connection parameters.  Blocks are stored in partitions by task date.
+    This task fetches the blocks from the Course Blocks edX REST API, and stores each course's result on a separate line
+    of JSON.  Each line contains the "root" block ID, and a "blocks" dict of blocks.
 
-    The `api_args` parameter defines the query string parameters passed to the REST API call which fetches all the
-    course blocks, and a list of their children.
+    See the EdxApiClient to configure the REST API connection parameters.
+    """
+    api_root_url = luigi.Parameter(
+        config_path={'section': 'course-blocks', 'name': 'api_root_url'},
+        description="The base URL for the course blocks API. This URL should look like"
+                    "https://catalog-service.example.com/api/v1/blocks/"
+    )
+    api_token_type = luigi.Parameter(
+        config_path={'section': 'course-blocks', 'name': 'api_token_type'},
+        default='bearer',
+        description="Type of authentication required for the API call, e.g. jwt or bearer."
+    )
 
-    The resulting blocks are then sorted in "course tree traversal" order, and annotated with a `course_path` string,
-    which lists all the block's parent block `display_name` values, Section, Subsection, and Unit.  These `display_name`
-    values are delimited by the `path_delimiter` parameter.
+    def run(self):
+        self.remove_output_on_overwrite()
+        client = EdxApiClient(token_type=self.api_token_type)
+        params = dict(depth="all", requested_fields="children", all_blocks="true")
+        counter = 0
+        with self.output().open('w') as output_file:
+            for course_id in self.course_ids:  # pylint: disable=not-an-iterable
+                params['course_id'] = course_id
+                try:
+                    # Course Blocks are returned on one page
+                    response = next(client.paginated_get(self.api_root_url, params=params, pagination_key=None))
+                except HTTPError as error:
+                    # Log and ignore 404 errors
+                    if error.response.status_code == 404:
+                        log.error('Error fetching API resource %s: %s', params, error)
+                    else:
+                        raise error
+                else:
+                    parsed_response = response.json()
+                    parsed_response['course_id'] = course_id
+                    output_file.write(json.dumps(parsed_response))
+                    output_file.write('\n')
+                    counter += 1
+
+        log.info('Wrote %d records to output file', counter)
+
+    def output(self):
+        return get_target_from_url(
+            url_path_join(
+                self.hive_partition_path('course_blocks_raw', partition_value=self.partition_value),
+                'course_blocks.json'
+            )
+        )
+
+
+class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, MapReduceJobTask):
+    """
+    This task processes the data returned by the Course Blocks API into CourseBlock string tuples.
 
     There are 4 types of blocks:
-
     * root: The root block is flagged by the Course Blocks REST API.  They are marked by `is_root=True`.  Will
       also have `parent_block_id=None`, `course_path=''`, and `sort_idx=0`.
     * child: Blocks which have a single parent will have `parent_block_id not None`, and a `course_path` string which
@@ -100,26 +146,6 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
     output_root = luigi.Parameter(
         description='URL where the map reduce data should be stored.',
     )
-    api_args = luigi.Parameter(
-        config_path={'section': 'course-blocks', 'name': 'api_args'},
-        default='{"depth": "all", "requested_fields": "children", "all_blocks": "true"}',
-        description='JSON structure containing the arguments passed to the course blocks API.  Course ID will be '
-                    'added. Take care if altering these arguments, as many are critical for constructing the full '
-                    'course block tree.\n'
-                    'If using edx-platform release prior to eucalpytus, use: \n'
-                    '    {"depth": "all", "requested_fields": "children", "all_blocks": "true", '
-                    '"username": "<oauth_username>"}\n'
-                    'For more options, see: '
-                    'http://edx.readthedocs.io/projects/edx-platform-api/en/latest/courses/blocks.html'
-                    '#get-a-list-of-course-blocks-in-a-course',
-    )
-    api_resource = luigi.Parameter(
-        config_path={'section': 'course-blocks', 'name': 'api_resource'},
-        default="blocks",
-        description='This task contacts the Course Blocks API, which requires the "blocks" resource. '
-                    'Overwrite this parameter only if the Course Blocks API gets moved or renamed.'
-    )
-
     path_delimiter = luigi.Parameter(
         config_path={'section': 'course-blocks', 'name': 'path_delimiter'},
         default=' / ',
@@ -148,32 +174,19 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
 
     def __init__(self, *args, **kwargs):
         super(CourseBlocksApiDataTask, self).__init__(*args, **kwargs)
-        self.api_args = json.loads(self.api_args)
         if isinstance(self.course_ids, basestring):
             self.course_ids = tuple(json.loads(self.course_ids))
+        elif isinstance(self.course_ids, list):
+            self.course_ids = tuple(self.course_ids)
         elif self.course_ids is None:
             self.course_ids = ()
 
     def requires(self):
-        """Require a EdxRestApiTask for each course_id in the given list."""
-
-        # Import EdxRestApiTask here so the EMR nodes don't need the edx_rest_api module, or its dependencies
-        from edx.analytics.tasks.util.edx_rest_api import EdxRestApiTask
-
-        # Require a EdxRestApiTask for each course_id
-        requirements = []
-        for course_id in self.course_ids:
-            arguments = self.api_args.copy()
-            arguments['course_id'] = course_id
-            requirements.append(EdxRestApiTask(
-                resource=self.api_resource,
-                arguments=arguments,
-                extend_response=dict(course_id=course_id),
-                date=self.date,
-                raise_exceptions=False,
-            ))
-
-        return requirements
+        return PullCourseBlocksApiData(
+            date=self.date,
+            course_ids=self.course_ids,
+            overwrite=self.overwrite,
+        )
 
     def mapper(self, line):
         """
@@ -184,18 +197,17 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, OverwriteOutputMixin,
 
         Yields a 2-element tuple containing the course_id and the parsed JSON data as a dict.
         """
-        if line is not None:
-            try:
-                data = json.loads(line)
-                root = data.get('root')
-                blocks = data.get('blocks', {})
-                course_id = data.get('course_id')
-                if course_id is not None and root is not None and root in blocks:
-                    yield (course_id, data)
-                else:
-                    log.error('Unable to read course blocks data from "%s"', line)
-            except ValueError:
-                log.error('Unable to parse course blocks API line as JSON: "%s"', line)
+        if line is None:
+            return
+
+        data = json.loads(line)
+        root = data.get('root')
+        blocks = data.get('blocks', {})
+        course_id = data.get('course_id')
+        if course_id is not None and root is not None and root in blocks:
+            yield (course_id, data)
+        else:
+            log.error('Unable to read course blocks data from "%s"', line)
 
     def reducer(self, key, values):
         """
@@ -344,7 +356,7 @@ class CourseBlocksTableTask(BareHiveTableTask):
         return self.table_location
 
 
-class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, HivePartitionTask):
+class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, MapReduceJobTaskMixin, HivePartitionTask):
     """
     A single hive partition of course block data.
 
@@ -403,10 +415,15 @@ class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, HivePartitionTask):
     @property
     def data_task(self):
         return CourseBlocksApiDataTask(
+            date=self.date,
             course_ids=self.course_ids,
             output_root=self.output_root,
             overwrite=self.overwrite,
+            mapreduce_engine=self.mapreduce_engine,
+            input_format=self.input_format,
+            lib_jar=self.lib_jar,
             n_reduce_tasks=self.n_reduce_tasks,
+            remote_log_level=self.remote_log_level,
         )
 
     @property
@@ -488,12 +505,12 @@ class LoadAllCourseBlocksWorkflow(WarehouseMixin, MapReduceJobTaskMixin, luigi.W
         """
         # Args shared by all tasks
         kwargs = dict(
-            date=self.date,
             mapreduce_engine=self.mapreduce_engine,
             input_format=self.input_format,
             lib_jar=self.lib_jar,
             n_reduce_tasks=self.n_reduce_tasks,
             remote_log_level=self.remote_log_level,
+            date=self.date,
             overwrite=self.hive_overwrite,
         )
 

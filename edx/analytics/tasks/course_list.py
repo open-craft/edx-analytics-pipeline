@@ -11,6 +11,7 @@ import luigi
 
 from edx.analytics.tasks.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin
 from edx.analytics.tasks.url import get_target_from_url, url_path_join
+from edx.analytics.tasks.util.edx_api_client import EdxApiClient
 from edx.analytics.tasks.util.hive import (
     WarehouseMixin, BareHiveTableTask, HivePartitionTask,
 )
@@ -72,59 +73,72 @@ class TimestampPartitionMixin(object):
         return unicode(self.date.strftime(self.partition_format))
 
 
-class CourseListDownstreamMixin(TimestampPartitionMixin, WarehouseMixin, MapReduceJobTaskMixin):
+class CourseListDownstreamMixin(TimestampPartitionMixin, WarehouseMixin, OverwriteOutputMixin):
     """Common parameters used by the Course List Data and Partition tasks."""
     pass
 
 
-class CourseListApiDataTask(CourseListDownstreamMixin, OverwriteOutputMixin, MapReduceJobTask):
+class PullCourseListApiData(CourseListDownstreamMixin, luigi.Task):
     """
-    This task fetches the courses list from the Courses edX REST API.  See the EdxRestApiTask to configure the REST API
-    connection parameters.
+    This task fetches the courses list from the Courses edX REST API, and
+    writes one line of JSON for each course to the output() target.
 
-    The `api_args` parameter defines the query string parameters passed to the REST API call.
-    The `api_resource` parameter value indicates that this task contacts the Courses API.
+    See the EdxRestClient to configure the REST API connection parameters.
+    """
+    api_root_url = luigi.Parameter(
+        config_path={'section': 'course-list', 'name': 'api_root_url'},
+        description="The base URL for the courses API. This URL should look like"
+                    "https://catalog-service.example.com/api/v1/courses/"
+    )
+    api_page_size = luigi.IntParameter(
+        config_path={'section': 'course-list', 'name': 'page_size'},
+        significant=False,
+        default=100,
+        description="The number of records to request from the API in each HTTP request."
+    )
 
-    The resulting courses are stored in partitions by task date.
+    def run(self):
+        self.remove_output_on_overwrite()
+        client = EdxApiClient()
+        params = {
+            'page_size': self.api_page_size,
+        }
+        pagination = ('pagination', 'next')
+        counter = 0
+        with self.output().open('w') as output_file:
+            for response in client.paginated_get(self.api_root_url, params=params, pagination_key=pagination):
+                parsed_response = response.json()
+                for course in parsed_response.get('results', []):
+                    output_file.write(json.dumps(course))
+                    output_file.write('\n')
+                    counter += 1
+
+        log.info('Wrote %d records to output file', counter)
+
+    def output(self):
+        return get_target_from_url(
+            url_path_join(
+                self.hive_partition_path('course_list_raw', partition_value=self.partition_value),
+                'course_list.json'
+            )
+        )
+
+
+class CourseListApiDataTask(CourseListDownstreamMixin, MapReduceJobTask):
+    """
+    This task processes the data returned by the Course List API into CourseRecord string tuples.
 
     """
     output_root = luigi.Parameter(
         description='URL where the map reduce data should be stored.',
-    )
-    api_args = luigi.Parameter(
-        config_path={'section': 'course-list', 'name': 'api_args'},
-        default='{"page_size": 100}',
-        description='JSON structure containing the arguments passed to the courses API.'
-                    'Take care if altering these arguments, as many are critical for constructing the full '
-                    'course list details. For options, see: '
-                    'http://edx.readthedocs.io/projects/edx-platform-api/en/latest/courses/courses.html'
-                    '#get-a-list-of-courses',
-    )
-    api_resource = luigi.Parameter(
-        config_path={'section': 'course-list', 'name': 'api_resource'},
-        default="courses",
-        description='This task contacts the Courses API, which requires the "courses" resource. '
-                    'Overwrite this parameter only if the Courses API gets moved or renamed.'
     )
 
     # Write the output directly to the final destination and rely on the _SUCCESS file to indicate
     # whether or not it is complete. Note that this is a custom extension to luigi.
     enable_direct_output = True
 
-    def __init__(self, *args, **kwargs):
-        super(CourseListApiDataTask, self).__init__(*args, **kwargs)
-        # Parse api_args into a dict, if given a string
-        if isinstance(self.api_args, basestring):
-            self.api_args = json.loads(self.api_args)
-
     def requires(self):
-        # Import EdxRestApiTask here so the EMR nodes don't need the edx_rest_api module, or its dependencies
-        from edx.analytics.tasks.util.edx_rest_api import EdxRestApiTask
-        return EdxRestApiTask(
-            resource=self.api_resource,
-            arguments=self.api_args,
-            date=self.date,
-        )
+        return PullCourseListApiData(date=self.date, overwrite=self.overwrite)
 
     def mapper(self, line):
         """
@@ -132,28 +146,25 @@ class CourseListApiDataTask(CourseListDownstreamMixin, OverwriteOutputMixin, Map
 
         Yields a 2-element tuple for each valid course containing the course's ID and the parsed JSON data as a dict.
         """
-        if line is not None:
-            try:
-                data = json.loads(line)
-                courses = data.get('results', [])
-                for course in courses:
+        if line is None:
+            return
 
-                    # eucalpytus API uses 'id' instead of 'course_id'
-                    if 'id' in course:
-                        course_id = course['id']
-                        del course['id']
-                        course['course_id'] = course_id
+        course = json.loads(line)
 
-                    else:
-                        course_id = course.get('course_id')
+        # eucalpytus API uses 'id' instead of 'course_id'
+        if 'id' in course:
+            course_id = course['id']
+            del course['id']
+            course['course_id'] = course_id
 
-                    if course_id is not None:
-                        course['course_id'] = course_id
-                        yield (course_id, course)
-                    else:
-                        log.error('Unable to read course data from "%s"', line)
-            except ValueError:
-                log.error('Unable to parse course API response line: "%s"', line)
+        else:
+            course_id = course.get('course_id')
+
+        if course_id is not None:
+            course['course_id'] = course_id
+            yield (course_id, course)
+        else:
+            log.error('Unable to read course data from "%s"', line)
 
     def reducer(self, _key, values):
         """
@@ -225,7 +236,7 @@ class CourseListTableTask(BareHiveTableTask):
         return self.table_location
 
 
-class CourseListPartitionTask(CourseListDownstreamMixin, HivePartitionTask):
+class CourseListPartitionTask(CourseListDownstreamMixin, MapReduceJobTaskMixin, HivePartitionTask):
     """A single hive partition of course data."""
 
     # Write the output directly to the final destination and rely on the partition_location dir to
@@ -245,7 +256,11 @@ class CourseListPartitionTask(CourseListDownstreamMixin, HivePartitionTask):
             date=self.date,
             output_root=self.output_root,
             overwrite=self.overwrite,
+            mapreduce_engine=self.mapreduce_engine,
+            input_format=self.input_format,
+            lib_jar=self.lib_jar,
             n_reduce_tasks=self.n_reduce_tasks,
+            remote_log_level=self.remote_log_level,
         )
 
     @property

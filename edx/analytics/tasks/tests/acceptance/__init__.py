@@ -229,11 +229,13 @@ class AcceptanceTestCase(unittest.TestCase):
                 'client_secret': 'oauth_secret',
                 'oauth_username': 'test_user',
                 'oauth_password': 'password',
-                'base_url': 'http://acceptance.test',
-                'cache_root': self.edx_rest_api_cache_root,
+                'auth_url': 'http://acceptance.test',
             },
             'course-blocks': {
-                'load_blocks_marker': url_path_join(self.test_out, 'course-blocks-marker'),
+                'api_root_url': 'http://acceptance.test/api/courses/v1/blocks/',
+            },
+            'course-list': {
+                'api_root_url': 'http://acceptance.test/api/courses/v1/courses/',
             },
         }
         if 'vertica_creds_url' in self.config:

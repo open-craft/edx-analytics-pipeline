@@ -59,17 +59,33 @@ class EdxApiClientTestCase(unittest.TestCase):
 
         self.assert_token_request_body(FAKE_CLIENT_ID, FAKE_CLIENT_SECRET)
 
-    def assert_token_request_body(self, client_id, client_secret):
+    def assert_token_request_body(self, client_id, client_secret, token_type='jwt'):
         """Look at the most recent request and make sure it contained the provided credentials."""
         token_request = httpretty.last_request()
         self.assertEqual(token_request.method, 'POST')
         self.assertEqual(
             token_request.parsed_body,
             {
-                'token_type': ['jwt'],
+                'token_type': [token_type],
                 'client_secret': [client_secret],
                 'client_id': [client_id],
                 'grant_type': ['client_credentials']
+            }
+        )
+
+    def assert_dogwood_token_request_body(self, client_id, client_secret, oauth_username, oauth_password):
+        """Look at the most recent request and make sure it contained the provided credentials."""
+        token_request = httpretty.last_request()
+        self.assertEqual(token_request.method, 'POST')
+        self.assertEqual(
+            token_request.parsed_body,
+            {
+                'grant_type': ['password'],
+                'token_type': ['jwt'],
+                'client_secret': [client_secret],
+                'client_id': [client_id],
+                'username': [oauth_username],
+                'password': [oauth_password],
             }
         )
 
@@ -94,6 +110,36 @@ class EdxApiClientTestCase(unittest.TestCase):
         client.ensure_oauth_access_token()
 
         self.assert_token_request_body('cidfromcfg', 'secfromcfg')
+        self.assertEqual(client.authenticated_session.auth.token, FAKE_ACCESS_TOKEN)
+
+    @with_luigi_config(
+        ('edx-rest-api', 'client_id', 'cidfromcfg'),
+        ('edx-rest-api', 'client_secret', 'secfromcfg'),
+        ('edx-rest-api', 'auth_url', FAKE_AUTH_URL)
+    )
+    def test_token_type(self):
+        self.prepare_for_token_request()
+
+        client = EdxApiClient(token_type='bearer')
+        client.ensure_oauth_access_token()
+
+        self.assert_token_request_body('cidfromcfg', 'secfromcfg', token_type='bearer')
+        self.assertEqual(client.authenticated_session.auth.token, FAKE_ACCESS_TOKEN)
+
+    @with_luigi_config(
+        ('edx-rest-api', 'client_id', 'cidfromcfg'),
+        ('edx-rest-api', 'client_secret', 'secfromcfg'),
+        ('edx-rest-api', 'oauth_username', 'unamefromcfg'),
+        ('edx-rest-api', 'oauth_password', 'pwdfromcfg'),
+        ('edx-rest-api', 'auth_url', FAKE_AUTH_URL)
+    )
+    def test_oauth_dogwood_from_config(self):
+        self.prepare_for_token_request()
+
+        client = EdxApiClient()
+        client.ensure_oauth_access_token()
+
+        self.assert_dogwood_token_request_body('cidfromcfg', 'secfromcfg', 'unamefromcfg', 'pwdfromcfg')
         self.assertEqual(client.authenticated_session.auth.token, FAKE_ACCESS_TOKEN)
 
     def test_expiration(self):
