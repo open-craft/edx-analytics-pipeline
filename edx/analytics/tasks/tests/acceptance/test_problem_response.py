@@ -20,7 +20,7 @@ class ProblemResponseReportWorkflowAcceptanceTest(AcceptanceTestCase):
     Tests the ProblemResponseReportWorkflow.
     """
 
-    TRACKING_LOG = 'tracking.log'
+    TRACKING_LOG = 'problem_response_tracking.log'
     DAILY_PARTITION_FORMAT = '%Y%m%d'
     HOURLY_PARTITION_FORMAT = '%Y%m%dT%H'
     DATE = datetime.date(2016, 9, 8)
@@ -30,16 +30,16 @@ class ProblemResponseReportWorkflowAcceptanceTest(AcceptanceTestCase):
         super(ProblemResponseReportWorkflowAcceptanceTest, self).setUp()
 
         # Copy course blocks hive partition data into warehouse
-        input_dir = url_path_join(self.data_dir, 'input', 'problem_response')
         table_name = 'course_blocks'
+        input_dir = url_path_join(self.data_dir, 'output', table_name)
         daily_partition = self.DATE.strftime(self.DAILY_PARTITION_FORMAT)
         for input_file_name in ('_SUCCESS', 'part-00000', 'part-00001'):
-            src = url_path_join(input_dir, table_name, input_file_name)
+            src = url_path_join(input_dir, input_file_name)
             dst = url_path_join(self.warehouse_path, table_name, "dt=" + daily_partition, input_file_name)
             self.upload_file(src, dst)
 
         # Copy tracking logs into hdfs
-        self.upload_tracking_log(url_path_join(input_dir, self.TRACKING_LOG), self.DATE)
+        self.upload_tracking_log(url_path_join(self.data_dir, 'input', self.TRACKING_LOG), self.DATE)
 
         # Create temporary report output dir, which is deleted on cleanup
         self.temporary_dir = tempfile.mkdtemp()
