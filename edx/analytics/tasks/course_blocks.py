@@ -50,8 +50,7 @@ class CourseBlockRecord(Record):
                                           'details on how this value is set for different types of blocks.')
     sort_idx = IntegerField(nullable=True,
                             description='Number indicating the position that this block holds in a course-outline '
-                                        'sorted list of blocks. See `CourseBlocksApiDataTask.sort_unplaced_blocks_up` '
-                                        'for how this value is set for different types of blocks.')
+                                        'sorted list of blocks. See `CourseBlocksApiDataTask.sort_orphan_blocks_up`.')
 
 
 class CourseBlocksDownstreamMixin(TimestampPartitionMixin, WarehouseMixin, OverwriteOutputMixin):
@@ -136,13 +135,12 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, MapReduceJobTask):
     * child: Blocks which have a single parent will have `parent_block_id not None`, and a `course_path` string which
       concatenates the parent block's display_name values.
     * DAG: Blocks which have more than one parent (and thus create directed acyclic graphs, aka DAGs) are marked with
-      `is_dag=True`.  Will also have `parent_block_id=None`, and have a `course_path` value configured by
-      the `multiple_parent_blocks_path` parameter.
+      `is_dag=True`.  Will have `parent_block_id` and `course_path` determined by the first place the block is found
+       when traversing the course blocks tree.
     * Orphan: Blocks with no parents are marked with `is_orphan=True`.  Will have a `course_path` value configured by
       the `deleted_blocks_path` parameter.
 
-    Orphan and DAG blocks can be sorted to the top or bottom of the list by adjusting the `sort_unplaced_blocks_up`
-    parameter.
+    Orphan blocks can be sorted to the top or bottom of the list by adjusting the `sort_orphan_blocks_up` parameter.
 
     """
     output_root = luigi.Parameter(
@@ -158,16 +156,11 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, MapReduceJobTask):
         default='(Deleted block :)',
         description='Mark deleted (orphan) blocks with this string in course_path.',
     )
-    multiple_parent_blocks_path = luigi.Parameter(
-        config_path={'section': 'course-blocks', 'name': 'multiple_parent_blocks_path'},
-        default='(Multiple locations :)',
-        description='Mark blocks with more than one parent with this string in course_path.',
-    )
-    sort_unplaced_blocks_up = luigi.BooleanParameter(
-        config_path={'section': 'course-blocks', 'name': 'sort_unplaced_blocks_up'},
+    sort_orphan_blocks_up = luigi.BooleanParameter(
+        config_path={'section': 'course-blocks', 'name': 'sort_orphan_blocks_up'},
         default=False,
-        description='If True, any deleted (orphan) or multi-parented blocks will be pushed to the top of the list '
-                    '(in an indeterminate order).  If False, these blocks will be pushed to the bottom.'
+        description='If True, any deleted (orphan) blocks will be pushed to the top of the list '
+                    '(in an indeterminate order).  If False, orphan blocks will be pushed to the bottom.'
     )
 
     # Write the output directly to the final destination and rely on the _SUCCESS file to indicate
@@ -229,7 +222,7 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, MapReduceJobTask):
             self._index_children(root_id, blocks)
 
             # Sort unplaced (orphan, multi-parent) blocks towards the top or bottom, as configured
-            if self.sort_unplaced_blocks_up:
+            if self.sort_orphan_blocks_up:
                 no_sort_idx = -1
             else:
                 no_sort_idx = len(blocks.keys())
@@ -247,9 +240,7 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, MapReduceJobTask):
                 course_path = u''
                 sort_idx = block.get('sort_idx', no_sort_idx)
 
-                if is_dag:
-                    course_path = unicode(self.multiple_parent_blocks_path)
-                elif not is_root:
+                if not is_root:
                     if len(parents) == 0:
                         is_orphan = True
                         course_path = unicode(self.deleted_blocks_path)
@@ -299,9 +290,9 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, MapReduceJobTask):
         """
         root = blocks.get(root_id, {})
 
-        # If we've seen this block before, then don't bother to traverse again.
-        if root.get('visited', False):
-            return root.get('sort_idx')
+        # If the block doesn't exist, or we've seen this block before, then don't bother to traverse.
+        if not root or root.get('visited', False):
+            return root.get('sort_idx', sort_idx)
         else:
             root['visited'] = True
 
@@ -311,19 +302,16 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, MapReduceJobTask):
         children = root.get('children', [])
         more += children
 
-        if not root.get('is_dag', False):
+        if 'sort_idx' not in root:
             root['sort_idx'] = sort_idx
             sort_idx += 1
 
         for child_id in children:
             child = blocks.get(child_id, {})
 
-            # Child has multiple parents.  Abort!
+            # Child has multiple parents.  Mark it, and use the first parent block found.
             if 'parents' in child:
                 child['is_dag'] = True
-                del child['sort_idx']
-                del child['parent_block_id']
-                del child['parents']
             else:
                 child['parents'] = root.get('parents', [])[:]
                 child['parents'].append(root_id)

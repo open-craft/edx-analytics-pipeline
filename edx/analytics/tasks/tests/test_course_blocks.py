@@ -160,6 +160,7 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
                         'id': 'jkl',
                         'display_name': 'JKL',
                         'type': 'block',
+                        'children': ['vwx'],
                     },
                     "mno": {
                         'id': 'mno',
@@ -178,15 +179,21 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
                         'display_name': 'STU',
                         'type': 'block',
                     },
+                    "vwx": {
+                        'id': 'vwx',
+                        'display_name': 'VWX',
+                        'type': 'block',
+                    },
                 },
             }],
             (('abc', 'block', 'ABC', '1', '0', '0', '\\N', '', '0'),
              ('def', 'block', 'DEF', '0', '0', '0', 'abc', 'ABC', '1'),
              ('stu', 'block', 'STU', '0', '0', '0', 'abc', 'ABC', '2'),
+             ('jkl', 'block', 'JKL', '0', '0', '1', 'def', 'ABC / DEF', '3'),
              ('mno', 'block', 'MNO', '0', '0', '0', 'def', 'ABC / DEF', '4'),
-             ('pqr', 'block', 'PQR', '0', '0', '0', 'mno', 'ABC / DEF / MNO', '5'),
-             ('jkl', 'block', 'JKL', '0', '0', '1', '\\N', '(Multiple locations :)', '7'),
-             ('ghi', 'block', 'GHI', '0', '1', '0', '\\N', '(Deleted block :)', '7'),)
+             ('vwx', 'block', 'VWX', '0', '0', '0', 'jkl', 'ABC / DEF / JKL', '5'),
+             ('pqr', 'block', 'PQR', '0', '0', '0', 'mno', 'ABC / DEF / MNO', '6'),
+             ('ghi', 'block', 'GHI', '0', '1', '0', '\\N', '(Deleted block :)', '8')),
         ),
         # A "real" example, taken from the edX Demo course
         ([json.loads(load_fixture('demo_course_blocks.json'))],
@@ -242,6 +249,7 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
                         'id': 'jkl',
                         'display_name': 'JKL',
                         'type': 'block',
+                        'children': ['vwx'],
                     },
                     "mno": {
                         'id': 'mno',
@@ -260,21 +268,27 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
                         'display_name': 'STU',
                         'type': 'block',
                     },
+                    "vwx": {
+                        'id': 'vwx',
+                        'display_name': 'VWX',
+                        'type': 'block',
+                    },
                 },
             }],
-            (('jkl', 'block', 'JKL', '0', '0', '1', '\\N', '(Multiple locations :)', '-1'),
-             ('ghi', 'block', 'GHI', '0', '1', '0', '\\N', '(Deleted block :)', '-1'),
+            (('ghi', 'block', 'GHI', '0', '1', '0', '\\N', '(Deleted block :)', '-1'),
              ('abc', 'block', 'ABC', '1', '0', '0', '\\N', '', '0'),
              ('def', 'block', 'DEF', '0', '0', '0', 'abc', 'ABC', '1'),
              ('stu', 'block', 'STU', '0', '0', '0', 'abc', 'ABC', '2'),
+             ('jkl', 'block', 'JKL', '0', '0', '1', 'def', 'ABC / DEF', '3'),
              ('mno', 'block', 'MNO', '0', '0', '0', 'def', 'ABC / DEF', '4'),
-             ('pqr', 'block', 'PQR', '0', '0', '0', 'mno', 'ABC / DEF / MNO', '5'),)
+             ('vwx', 'block', 'VWX', '0', '0', '0', 'jkl', 'ABC / DEF / JKL', '5'),
+             ('pqr', 'block', 'PQR', '0', '0', '0', 'mno', 'ABC / DEF / MNO', '6'))
         ),
     )
     @unpack
     def test_sort_unplaced_blocks(self, input_data, expected_values):
 
-        self.task.sort_unplaced_blocks_up = True
+        self.task.sort_orphan_blocks_up = True
 
         # Inject our course_id into the input_data, and expected_values tuples
         expected_tuples = tuple((values[0],) + (self.course_id,) + values[1:] for values in expected_values)
