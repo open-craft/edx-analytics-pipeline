@@ -82,7 +82,7 @@ class PullCourseBlocksApiData(CourseBlocksDownstreamMixin, luigi.Task):
     api_root_url = luigi.Parameter(
         config_path={'section': 'course-blocks', 'name': 'api_root_url'},
         description="The base URL for the course blocks API. This URL should look like"
-                    "https://catalog-service.example.com/api/v1/blocks/"
+                    "https://lms.example.com/api/v1/blocks/"
     )
     api_token_type = luigi.Parameter(
         config_path={'section': 'course-blocks', 'name': 'api_token_type'},

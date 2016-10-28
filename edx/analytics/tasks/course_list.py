@@ -88,7 +88,7 @@ class PullCourseListApiData(CourseListDownstreamMixin, luigi.Task):
     api_root_url = luigi.Parameter(
         config_path={'section': 'course-list', 'name': 'api_root_url'},
         description="The base URL for the courses API. This URL should look like"
-                    "https://catalog-service.example.com/api/v1/courses/"
+                    "https://lms.example.com/api/v1/courses/"
     )
     api_page_size = luigi.IntParameter(
         config_path={'section': 'course-list', 'name': 'page_size'},
