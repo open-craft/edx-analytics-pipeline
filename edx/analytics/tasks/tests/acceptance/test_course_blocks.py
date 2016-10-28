@@ -4,7 +4,6 @@ End to end test of the LoadAllCourseBlocksWorkflow task.
 
 import logging
 import datetime
-import json
 
 from edx.analytics.tasks.tests.acceptance import AcceptanceTestCase
 from edx.analytics.tasks.url import url_path_join, get_target_from_url
@@ -46,7 +45,6 @@ class LoadAllCourseBlocksWorkflowAcceptanceTest(AcceptanceTestCase):
         self.upload_file(url_path_join(self.data_dir, 'input', file_name),
                          url_path_join(self.warehouse_path, 'course_blocks_raw', "dt=" + daily_partition, file_name))
 
-
     def test_partition_task(self):
         """Run the LoadAllCourseBlocksWorkflow and test its output."""
         date = self.DATE.strftime('%Y-%m-%d')
@@ -75,4 +73,3 @@ class LoadAllCourseBlocksWorkflowAcceptanceTest(AcceptanceTestCase):
             expected_output_target = get_target_from_url(expected_output_file)
             expected_output = expected_output_target.open('r').read()
             self.assertEqual(actual_output, expected_output)
-
