@@ -119,179 +119,110 @@ class CourseBlocksApiDataMapperTaskTest(CourseBlocksTestMixin, MapperTestMixin, 
 class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin, unittest.TestCase):
     """Tests the CourseBlocksApiDataTask reducer output"""
 
+    # single, root-only block
+    single_block_input_data = {
+        "root": "abc",
+        "blocks": {
+            "abc": {
+                'id': 'abc',
+                'display_name': 'ABC',
+                'type': 'course',
+            },
+        },
+    }
+
+    # multiple blocks, including an orphan, and one with multiple parents.
+    multiple_block_input_data = {
+        "root": "abc",
+        "blocks": {
+            "abc": {
+                'id': 'abc',
+                'display_name': 'ABC',
+                'type': 'block',
+                'children': ['def', 'stu'],
+            },
+            "def": {
+                'id': 'def',
+                'display_name': 'DEF',
+                'type': 'block',
+                'children': ['jkl', 'mno']
+            },
+            "ghi": {
+                'id': 'ghi',
+                'display_name': 'GHI',
+                'type': 'block',
+            },
+            "jkl": {
+                'id': 'jkl',
+                'display_name': 'JKL',
+                'type': 'block',
+                'children': ['vwx'],
+            },
+            "mno": {
+                'id': 'mno',
+                'display_name': 'MNO',
+                'type': 'block',
+                'children': ['pqr']
+            },
+            "pqr": {
+                'id': 'pqr',
+                'display_name': 'PQR',
+                'type': 'block',
+                'children': ['jkl']
+            },
+            "stu": {
+                'id': 'stu',
+                'display_name': 'STU',
+                'type': 'block',
+            },
+            "vwx": {
+                'id': 'vwx',
+                'display_name': 'VWX',
+                'type': 'block',
+            },
+        },
+    }
+
     # data tuple fields are given in this order:
     # (block_id,block_type,display_name,is_root,is_orphan,is_dag,parent_block_id,course_path,sort_idx)
     @data(
-        (
-            [{
-                "root": "abc",
-                "blocks": {
-                    "abc": {
-                        'id': 'abc',
-                        'display_name': 'ABC',
-                        'type': 'course',
-                    },
-                },
-            }],
-            (('abc', 'course', 'ABC', '1', '0', '0', '\\N', '', '0'),)
-        ),
-        (
-            [{
-                "root": "abc",
-                "blocks": {
-                    "abc": {
-                        'id': 'abc',
-                        'display_name': 'ABC',
-                        'type': 'block',
-                        'children': ['def', 'stu'],
-                    },
-                    "def": {
-                        'id': 'def',
-                        'display_name': 'DEF',
-                        'type': 'block',
-                        'children': ['jkl', 'mno']
-                    },
-                    "ghi": {
-                        'id': 'ghi',
-                        'display_name': 'GHI',
-                        'type': 'block',
-                    },
-                    "jkl": {
-                        'id': 'jkl',
-                        'display_name': 'JKL',
-                        'type': 'block',
-                        'children': ['vwx'],
-                    },
-                    "mno": {
-                        'id': 'mno',
-                        'display_name': 'MNO',
-                        'type': 'block',
-                        'children': ['pqr']
-                    },
-                    "pqr": {
-                        'id': 'pqr',
-                        'display_name': 'PQR',
-                        'type': 'block',
-                        'children': ['jkl']
-                    },
-                    "stu": {
-                        'id': 'stu',
-                        'display_name': 'STU',
-                        'type': 'block',
-                    },
-                    "vwx": {
-                        'id': 'vwx',
-                        'display_name': 'VWX',
-                        'type': 'block',
-                    },
-                },
-            }],
-            (('abc', 'block', 'ABC', '1', '0', '0', '\\N', '', '0'),
-             ('def', 'block', 'DEF', '0', '0', '0', 'abc', 'ABC', '1'),
-             ('stu', 'block', 'STU', '0', '0', '0', 'abc', 'ABC', '2'),
-             ('jkl', 'block', 'JKL', '0', '0', '1', 'def', 'ABC / DEF', '3'),
-             ('mno', 'block', 'MNO', '0', '0', '0', 'def', 'ABC / DEF', '4'),
-             ('vwx', 'block', 'VWX', '0', '0', '0', 'jkl', 'ABC / DEF / JKL', '5'),
-             ('pqr', 'block', 'PQR', '0', '0', '0', 'mno', 'ABC / DEF / MNO', '6'),
-             ('ghi', 'block', 'GHI', '0', '1', '0', '\\N', '(Deleted block :)', '8')),
-        ),
-        # A "real" example, taken from the edX Demo course
-        ([json.loads(load_fixture('demo_course_blocks.json'))],
-         eval(load_fixture('demo_course_blocks_reduced.tuples')),  # pylint: disable=eval-used
-         False),
+        ((('abc', 'course', 'ABC', '1', '0', '0', '\\N', '', '0'),), False),
+        ((('abc', 'course', 'ABC', '1', '0', '0', '\\N', '', '0'),), True),
+        ((('abc', 'block', 'ABC', '1', '0', '0', '\\N', '', '0'),
+          ('def', 'block', 'DEF', '0', '0', '0', 'abc', 'ABC', '1'),
+          ('stu', 'block', 'STU', '0', '0', '0', 'abc', 'ABC', '2'),
+          ('jkl', 'block', 'JKL', '0', '0', '1', 'def', 'ABC / DEF', '3'),
+          ('mno', 'block', 'MNO', '0', '0', '0', 'def', 'ABC / DEF', '4'),
+          ('vwx', 'block', 'VWX', '0', '0', '0', 'jkl', 'ABC / DEF / JKL', '5'),
+          ('pqr', 'block', 'PQR', '0', '0', '0', 'mno', 'ABC / DEF / MNO', '6'),
+          ('ghi', 'block', 'GHI', '0', '1', '0', '\\N', '(Deleted block :)', '8')), False),
+        ((('ghi', 'block', 'GHI', '0', '1', '0', '\\N', '(Deleted block :)', '-1'),
+          ('abc', 'block', 'ABC', '1', '0', '0', '\\N', '', '0'),
+          ('def', 'block', 'DEF', '0', '0', '0', 'abc', 'ABC', '1'),
+          ('stu', 'block', 'STU', '0', '0', '0', 'abc', 'ABC', '2'),
+          ('jkl', 'block', 'JKL', '0', '0', '1', 'def', 'ABC / DEF', '3'),
+          ('mno', 'block', 'MNO', '0', '0', '0', 'def', 'ABC / DEF', '4'),
+          ('vwx', 'block', 'VWX', '0', '0', '0', 'jkl', 'ABC / DEF / JKL', '5'),
+          ('pqr', 'block', 'PQR', '0', '0', '0', 'mno', 'ABC / DEF / MNO', '6')), True),
     )
     @unpack
-    def test_map_output(self, input_data, expected_tuples, inject_course_id=True):
+    def test_map_output(self, expected_tuples, sort_orphan_blocks_up):
+        # Use single or multiple block input data
+        input_data = self.single_block_input_data if len(expected_tuples) == 1 else self.multiple_block_input_data
+
         # Inject our course_id into the input_data, and expected_values tuples
-        if inject_course_id:
-            expected_tuples = tuple((values[0],) + (self.course_id,) + values[1:] for values in expected_tuples)
+        expected_tuples = tuple((values[0],) + (self.course_id,) + values[1:] for values in expected_tuples)
+
+        self.task.sort_orphan_blocks_up = sort_orphan_blocks_up
         self._check_output_complete_tuple(
-            input_data,
+            (input_data,),
             expected_tuples,
         )
 
-    @data(
-        (
-            [{
-                "root": "abc",
-                "blocks": {
-                    "abc": {
-                        'id': 'abc',
-                        'display_name': 'ABC',
-                        'type': 'course',
-                    },
-                },
-            }],
-            (('abc', 'course', 'ABC', '1', '0', '0', '\\N', '', '0'),)
-        ),
-        (
-            [{
-                "root": "abc",
-                "blocks": {
-                    "abc": {
-                        'id': 'abc',
-                        'display_name': 'ABC',
-                        'type': 'block',
-                        'children': ['def', 'stu'],
-                    },
-                    "def": {
-                        'id': 'def',
-                        'display_name': 'DEF',
-                        'type': 'block',
-                        'children': ['jkl', 'mno']
-                    },
-                    "ghi": {
-                        'id': 'ghi',
-                        'display_name': 'GHI',
-                        'type': 'block',
-                    },
-                    "jkl": {
-                        'id': 'jkl',
-                        'display_name': 'JKL',
-                        'type': 'block',
-                        'children': ['vwx'],
-                    },
-                    "mno": {
-                        'id': 'mno',
-                        'display_name': 'MNO',
-                        'type': 'block',
-                        'children': ['pqr']
-                    },
-                    "pqr": {
-                        'id': 'pqr',
-                        'display_name': 'PQR',
-                        'type': 'block',
-                        'children': ['jkl']
-                    },
-                    "stu": {
-                        'id': 'stu',
-                        'display_name': 'STU',
-                        'type': 'block',
-                    },
-                    "vwx": {
-                        'id': 'vwx',
-                        'display_name': 'VWX',
-                        'type': 'block',
-                    },
-                },
-            }],
-            (('ghi', 'block', 'GHI', '0', '1', '0', '\\N', '(Deleted block :)', '-1'),
-             ('abc', 'block', 'ABC', '1', '0', '0', '\\N', '', '0'),
-             ('def', 'block', 'DEF', '0', '0', '0', 'abc', 'ABC', '1'),
-             ('stu', 'block', 'STU', '0', '0', '0', 'abc', 'ABC', '2'),
-             ('jkl', 'block', 'JKL', '0', '0', '1', 'def', 'ABC / DEF', '3'),
-             ('mno', 'block', 'MNO', '0', '0', '0', 'def', 'ABC / DEF', '4'),
-             ('vwx', 'block', 'VWX', '0', '0', '0', 'jkl', 'ABC / DEF / JKL', '5'),
-             ('pqr', 'block', 'PQR', '0', '0', '0', 'mno', 'ABC / DEF / MNO', '6'))
-        ),
-    )
-    @unpack
-    def test_sort_unplaced_blocks(self, input_data, expected_values):
-
-        self.task.sort_orphan_blocks_up = True
-
-        # Inject our course_id into the input_data, and expected_values tuples
-        expected_tuples = tuple((values[0],) + (self.course_id,) + values[1:] for values in expected_values)
+    def test_edx_demo_blocks(self):
+        # Use a "real" input example, taken from the edX Demo course
+        input_data = [json.loads(load_fixture('demo_course_blocks.json'))]
+        expected_tuples = eval(load_fixture('demo_course_blocks_reduced.tuples'))  # pylint: disable=eval-used
         self._check_output_complete_tuple(
             input_data,
             expected_tuples,
