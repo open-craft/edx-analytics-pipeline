@@ -102,7 +102,8 @@ class PullCourseBlocksApiData(CourseBlocksDownstreamMixin, luigi.Task):
                     # Course Blocks are returned on one page
                     response = next(client.paginated_get(self.api_root_url, params=params, pagination_key=None))
                 except HTTPError as error:
-                    # Log and ignore 404 errors
+                    # 404 errors may occur if we try to fetch the course blocks for a deleted course.
+                    # So we just log and ignore them.
                     if error.response.status_code == 404:
                         log.error('Error fetching API resource %s: %s', params, error)
                     else:
