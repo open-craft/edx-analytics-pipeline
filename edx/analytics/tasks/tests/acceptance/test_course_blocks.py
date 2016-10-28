@@ -17,7 +17,7 @@ class LoadAllCourseBlocksWorkflowAcceptanceTest(AcceptanceTestCase):
     Tests the LoadAllCourseBlocksWorkflow.
     """
 
-    DAILY_PARTITION_FORMAT = '%Y%m%d'
+    DAILY_PARTITION_FORMAT = '%Y-%m-%d'
     DATE = datetime.date(2016, 9, 8)
     COURSE_IDS = (
         'course-v1:OpenCraft+DnDv2101x+2016',

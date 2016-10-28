@@ -59,12 +59,12 @@ class TimestampPartitionMixin(object):
     )
     partition_format = luigi.Parameter(
         config_path={'section': 'course_list', 'name': 'partition_format'},
-        default='%Y%m%d',
+        default='%Y-%m-%d',
         description='Format string for the course list table partition\'s `date` parameter. '
                     'Must result in a filename-safe string, or your partitions will fail to be created.\n'
-                    'The default value of "%Y%m%d" changes daily, and so causes a new course partition to to be '
-                    'created once a day.  For example, use "%Y%m%dT%H" to update hourly, though beware of load on the '
-                    'edX REST API.  See strftime for options.',
+                    'The default value of "%Y-%m-%d" changes daily, and so causes a new course partition to to be '
+                    'created once a day.  For example, use "%Y-%m-%dT%H" to update hourly, though beware of load on '
+                    'the edX REST API.  See strftime for options.',
     )
 
     @property

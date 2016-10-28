@@ -16,7 +16,7 @@ class CourseListPartitionTaskAcceptanceTest(AcceptanceTestCase):
     Tests the CourseListPartitionTask.
     """
 
-    DAILY_PARTITION_FORMAT = '%Y%m%d'
+    DAILY_PARTITION_FORMAT = '%Y-%m-%d'
     DATE = datetime.date(2016, 9, 8)
 
     def setUp(self):

@@ -222,7 +222,7 @@ class AcceptanceTestCase(unittest.TestCase):
                                  '"correct","answer","total_attempts","first_attempt_date","last_attempt_date"]',
                 'report_field_list_delimiter': '"|"',
                 'report_field_datetime_format': '%Y-%m-%dT%H:%M:%SZ',
-                'partition_format': '%Y%m%dT%H',
+                'partition_format': '%Y-%m-%dT%H',
             },
             'edx-rest-api': {
                 'client_id': 'oauth_id',

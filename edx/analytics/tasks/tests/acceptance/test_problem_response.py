@@ -21,8 +21,8 @@ class ProblemResponseReportWorkflowAcceptanceTest(AcceptanceTestCase):
     """
 
     TRACKING_LOG = 'problem_response_tracking.log'
-    DAILY_PARTITION_FORMAT = '%Y%m%d'
-    HOURLY_PARTITION_FORMAT = '%Y%m%dT%H'
+    DAILY_PARTITION_FORMAT = '%Y-%m-%d'
+    HOURLY_PARTITION_FORMAT = '%Y-%m-%dT%H'
     DATE = datetime.date(2016, 9, 8)
 
     def setUp(self):

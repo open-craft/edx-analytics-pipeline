@@ -88,14 +88,14 @@ class ProblemResponseTableMixin(TimestampPartitionMixin,
     # Override this parameter so we can change the config_path and default value.
     partition_format = luigi.Parameter(
         config_path={'section': 'problem-response', 'name': 'partition_format'},
-        default='%Y%m%d',
+        default='%Y-%m-%d',
         description='Datetime format string for the table partition, which is applied to the configured '
                     '`date` parameter.  Must result in a filename-safe string, or your partitions will '
                     'fail to be created.  It results in a combined partition containing: \n'
                     '* {course_id}: a filename-safe version of the configured course_id\n'
                     '* datetime format string:  Adjust this portion to update the data more or less frequently.\n'
-                    '  The default value of "%Y%m%d" changes daily, and so allows the data to update once a day.\n'
-                    '  For example, use "%Y%m%dT%H" to update hourly. See strftime for options.'
+                    '  The default value of "%Y-%m-%d" changes daily, and so allows the data to update once a day.\n'
+                    '  For example, use "%Y-%m-%dT%H" to update hourly. See strftime for options.'
 
     )
 
