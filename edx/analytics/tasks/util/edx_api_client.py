@@ -126,6 +126,27 @@ class EdxApiClient(object):
             self._expires_at = now + timedelta(seconds=data['expires_in'])
             log.info('Acquired a token that expires at %s', self._expires_at.isoformat())
 
+    def get(self, url, params=None, timeout_seconds=DEFAULT_TIMEOUT_SECONDS, retry_on=DEFAULT_RETRY_STATUS_CODES):
+        """
+        Fetches a single page of the given resource.
+
+        Arguments:
+            url (str): The URL of the resource.
+            params (dict): This is a dictionary of key-value pairs that are URL encoded and injected into the query
+                string when making the request.
+            timeout_seconds (float): When requesting a page, keep retrying unless this much time has elapsed. This timer
+                resets after every successful fetch of a page. Raise an error if it takes longer than this amount of
+                time to fetch an individual page.
+            retry_on (iterable): This is a set of HTTP status codes that should trigger a retry of the request if they
+                are received from the server in the response. If one is received the system implements an exponential
+                back-off and repeatedly requests the page until either the timeout expires, a fatal exception occurs, or
+                an OK response is received.
+
+        Returns: A single requests.Response object for the first page of data received from the server.
+        """
+        return next(self.paginated_get(url, params=params, timeout_seconds=timeout_seconds, retry_on=retry_on,
+                                       pagination_key=None))
+
     def paginated_get(self, url, params=None, timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
                       retry_on=DEFAULT_RETRY_STATUS_CODES, pagination_key='next'):
         """

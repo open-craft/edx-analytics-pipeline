@@ -165,11 +165,14 @@ class EdxApiClientTestCase(unittest.TestCase):
         }
         httpretty.register_uri('GET', FAKE_RESOURCE_URL, body=json.dumps(response_body))
 
-        responses = list(self.client.paginated_get(FAKE_RESOURCE_URL))
-        self.assertEqual(len(responses), 1)
-        response = responses[0]
+        response = self.client.get(FAKE_RESOURCE_URL)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json(), response_body)
+
+        responses = list(self.client.paginated_get(FAKE_RESOURCE_URL))
+        self.assertEqual(len(responses), 1)
+        self.assertEqual(response.status_code, responses[0].status_code)
+        self.assertEqual(response.json(), responses[0].json())
 
     def test_get_internal_server_error(self):
         self.prepare_for_token_request()
