@@ -75,7 +75,6 @@ class CourseBlocksApiDataTaskTest(CourseBlocksTestMixin, unittest.TestCase):
         ((), None),                          # empty
         (('abc',), ('abc',)),                # tuple
         (('abc', 'def'), ['abc', 'def']),    # array
-        (('def', 'ghi'), '["def", "ghi"]'),  # JSON string
     )
     @unpack
     def test_requires(self, course_ids, course_ids_parameter):
@@ -300,7 +299,6 @@ class CourseBlocksPartitionTaskTest(CourseBlocksTestMixin, unittest.TestCase):
     @data(
         (['abc', 'def', 'ghi'], ('abc', 'def', 'ghi')),
         (('klm', 'nop'), ('klm', 'nop')),
-        ('["qrs"]', ('qrs',)),
     )
     @unpack
     def test_requires_with_course_ids(self, course_ids, expected_course_ids):

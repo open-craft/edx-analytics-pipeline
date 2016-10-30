@@ -18,12 +18,6 @@ class LoadAllCourseBlocksWorkflowAcceptanceTest(AcceptanceTestCase):
 
     DAILY_PARTITION_FORMAT = '%Y-%m-%d'
     DATE = datetime.date(2016, 9, 8)
-    COURSE_IDS = (
-        'course-v1:OpenCraft+DnDv2101x+2016',
-        'course-v1:OpenCraft+PRDemo1+2016',
-        'course-v1:OpenCraft+PRDemo2+2016',
-        'course-v1:OpenCraft+VD101x+2016',
-    )
 
     def setUp(self):
         """Copy the input data into place."""

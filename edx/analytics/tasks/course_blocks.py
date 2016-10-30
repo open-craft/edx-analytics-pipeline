@@ -57,8 +57,8 @@ class CourseBlocksDownstreamMixin(TimestampPartitionMixin, WarehouseMixin, Overw
     """Common parameters used by the Course Blocks Data and Partition tasks."""
 
     course_ids = luigi.Parameter(
-        description='List of course_id values to fetch course_block data for.  Accepts a list or JSON-formatted string '
-                    'defining an array of course_id strings.'
+        is_list=True,
+        description='List of course_id values to fetch course_block data for.',
     )
     partition_format = luigi.Parameter(
         config_path={'section': 'course_blocks', 'name': 'partition_format'},
@@ -169,11 +169,7 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, MapReduceJobTask):
 
     def __init__(self, *args, **kwargs):
         super(CourseBlocksApiDataTask, self).__init__(*args, **kwargs)
-        if isinstance(self.course_ids, basestring):
-            self.course_ids = tuple(json.loads(self.course_ids))
-        elif isinstance(self.course_ids, list):
-            self.course_ids = tuple(self.course_ids)
-        elif self.course_ids is None:
+        if self.course_ids is None:
             self.course_ids = ()
 
     def requires(self):
@@ -368,9 +364,10 @@ class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, MapReduceJobTaskMix
     current date partition before running this task.
     """
     course_ids = luigi.Parameter(
+        is_list=True,
         default=None,
-        description='List of course_id values to fetch course_block data for.  Accepts a list or JSON-formatted string '
-                    'defining an array of course_id strings.  Either `input_root` or a `course_ids` must be provided.'
+        description='List of course_id values to fetch course_block data for. '
+                    'Either `input_root` or a `course_ids` must be provided.'
     )
     input_root = luigi.Parameter(
         default=None,
