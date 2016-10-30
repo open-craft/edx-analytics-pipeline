@@ -140,6 +140,7 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, MapReduceJobTask):
     * Orphan: Blocks with no parents are marked with `is_orphan=True`.  Will have a `course_path` value configured by
       the `deleted_blocks_path` parameter.
 
+    Blocks are sorted depth-first, using pre-order traversal.
     Orphan blocks can be sorted to the top or bottom of the list by adjusting the `sort_orphan_blocks_up` parameter.
 
     """
@@ -204,11 +205,11 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, MapReduceJobTask):
         """
         Creates a CourseBlock record for each block, including:
         * `course_path` field concatenated from the block's parents' display_name values
-        * `sort_idx` for the block, indicating where the block fits into the course in tree traversal order.
+        * `sort_idx` for the block, indicating where the block fits into the course.
 
         Input is the course block values as a list of dicts, keyed by course_id.
 
-        Yields each CourseBlock record as a tuple, sorted in course tree traversal order.
+        Yields each CourseBlock record as a tuple, sorted in course pre-order tree traversal order.
         """
         course_id = key
 
@@ -279,42 +280,32 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, MapReduceJobTask):
             self.remove_output_on_overwrite()
         super(CourseBlocksApiDataTask, self).run()
 
-    def _index_children(self, root_id, blocks, sort_idx=0, more=None):
+    def _index_children(self, block_id, blocks, parent_block_id=None, sort_idx=0):
         """
         Applies a sort_idx and parents list to all the blocks in the list.
-        Blocks are sorted in "tree traversal" order: https://en.wikipedia.org/wiki/Tree_traversal
+        Blocks are sorted in "pre-order tree traversal" order:
+            https://en.wikipedia.org/wiki/Tree_traversal#Pre-order
         """
-        root = blocks.get(root_id, {})
+        if block_id in blocks:
+            block = blocks[block_id]
 
-        # If the block doesn't exist, or we've seen this block before, then don't bother to traverse.
-        if not root or root.get('visited', False):
-            return root.get('sort_idx', sort_idx)
-        else:
-            root['visited'] = True
+            # If the block already has a sort_idx, then we've seen it before, and so it's a child of multiple parents.
+            if 'sort_idx' in block:
+                block['is_dag'] = True
 
-        if more is None:
-            more = []
-
-        children = root.get('children', [])
-        more += children
-
-        if 'sort_idx' not in root:
-            root['sort_idx'] = sort_idx
-            sort_idx += 1
-
-        for child_id in children:
-            child = blocks.get(child_id, {})
-
-            # Child has multiple parents.  Mark it, and use the first parent block found.
-            if 'parents' in child:
-                child['is_dag'] = True
             else:
-                child['parents'] = root.get('parents', [])[:]
-                child['parents'].append(root_id)
-                child['parent_block_id'] = root_id
+                block['sort_idx'] = sort_idx
+                sort_idx += 1
 
-        if more:
-            sort_idx = self._index_children(more[0], blocks, sort_idx, more[1:])
+                if parent_block_id is not None:
+                    parent = blocks[parent_block_id]
+                    block['parents'] = parent.get('parents', [])[:]
+                    block['parents'].append(parent_block_id)
+                    block['parent_block_id'] = parent_block_id
+
+                # Recurse on children
+                for child_id in block.get('children', []):
+                    sort_idx = self._index_children(child_id, blocks, block_id, sort_idx)
 
         return sort_idx
 

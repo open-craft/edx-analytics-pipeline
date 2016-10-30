@@ -119,7 +119,7 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
     """Tests the CourseBlocksApiDataTask reducer output"""
 
     # single, root-only block
-    single_block_input_data = {
+    single_block_input_data = json.dumps({
         "root": "abc",
         "blocks": {
             "abc": {
@@ -128,10 +128,10 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
                 'type': 'course',
             },
         },
-    }
+    })
 
     # multiple blocks, including an orphan, and one with multiple parents.
-    multiple_block_input_data = {
+    multiple_block_input_data = json.dumps({
         "root": "abc",
         "blocks": {
             "abc": {
@@ -180,7 +180,7 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
                 'type': 'block',
             },
         },
-    }
+    })
 
     # data tuple fields are given in this order:
     # (block_id,block_type,display_name,is_root,is_orphan,is_dag,parent_block_id,course_path,sort_idx)
@@ -189,25 +189,27 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
         ((('abc', 'course', 'ABC', '1', '0', '0', '\\N', '', '0'),), True),
         ((('abc', 'block', 'ABC', '1', '0', '0', '\\N', '', '0'),
           ('def', 'block', 'DEF', '0', '0', '0', 'abc', 'ABC', '1'),
-          ('stu', 'block', 'STU', '0', '0', '0', 'abc', 'ABC', '2'),
-          ('jkl', 'block', 'JKL', '0', '0', '1', 'def', 'ABC / DEF', '3'),
+          ('jkl', 'block', 'JKL', '0', '0', '1', 'def', 'ABC / DEF', '2'),
+          ('vwx', 'block', 'VWX', '0', '0', '0', 'jkl', 'ABC / DEF / JKL', '3'),
           ('mno', 'block', 'MNO', '0', '0', '0', 'def', 'ABC / DEF', '4'),
-          ('vwx', 'block', 'VWX', '0', '0', '0', 'jkl', 'ABC / DEF / JKL', '5'),
-          ('pqr', 'block', 'PQR', '0', '0', '0', 'mno', 'ABC / DEF / MNO', '6'),
+          ('pqr', 'block', 'PQR', '0', '0', '0', 'mno', 'ABC / DEF / MNO', '5'),
+          ('stu', 'block', 'STU', '0', '0', '0', 'abc', 'ABC', '6'),
           ('ghi', 'block', 'GHI', '0', '1', '0', '\\N', '(Deleted block :)', '8')), False),
         ((('ghi', 'block', 'GHI', '0', '1', '0', '\\N', '(Deleted block :)', '-1'),
           ('abc', 'block', 'ABC', '1', '0', '0', '\\N', '', '0'),
           ('def', 'block', 'DEF', '0', '0', '0', 'abc', 'ABC', '1'),
-          ('stu', 'block', 'STU', '0', '0', '0', 'abc', 'ABC', '2'),
-          ('jkl', 'block', 'JKL', '0', '0', '1', 'def', 'ABC / DEF', '3'),
+          ('jkl', 'block', 'JKL', '0', '0', '1', 'def', 'ABC / DEF', '2'),
+          ('vwx', 'block', 'VWX', '0', '0', '0', 'jkl', 'ABC / DEF / JKL', '3'),
           ('mno', 'block', 'MNO', '0', '0', '0', 'def', 'ABC / DEF', '4'),
-          ('vwx', 'block', 'VWX', '0', '0', '0', 'jkl', 'ABC / DEF / JKL', '5'),
-          ('pqr', 'block', 'PQR', '0', '0', '0', 'mno', 'ABC / DEF / MNO', '6')), True),
+          ('pqr', 'block', 'PQR', '0', '0', '0', 'mno', 'ABC / DEF / MNO', '5'),
+          ('stu', 'block', 'STU', '0', '0', '0', 'abc', 'ABC', '6')), True),
     )
     @unpack
     def test_map_output(self, expected_tuples, sort_orphan_blocks_up):
         # Use single or multiple block input data
-        input_data = self.single_block_input_data if len(expected_tuples) == 1 else self.multiple_block_input_data
+        input_data = json.loads(
+            self.single_block_input_data if len(expected_tuples) == 1 else self.multiple_block_input_data
+        )
 
         # Inject our course_id into the input_data, and expected_values tuples
         expected_tuples = tuple((values[0],) + (self.course_id,) + values[1:] for values in expected_tuples)
