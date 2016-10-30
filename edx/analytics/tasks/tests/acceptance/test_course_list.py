@@ -5,8 +5,8 @@ End to end test of the course list hive partition task.
 import logging
 import datetime
 
-from edx.analytics.tasks.tests.acceptance import AcceptanceTestCase
-from edx.analytics.tasks.url import url_path_join, get_target_from_url
+from edx.analytics.tasks.tests.acceptance import AcceptanceTestCase, get_target_for_local_server
+from edx.analytics.tasks.url import url_path_join
 
 log = logging.getLogger(__name__)
 
@@ -49,11 +49,11 @@ class CourseListPartitionTaskAcceptanceTest(AcceptanceTestCase):
         daily_partition = self.DATE.strftime(self.DAILY_PARTITION_FORMAT)
         for file_name in ('_SUCCESS', 'part-00000', 'part-00001'):
             actual_output_file = url_path_join(self.warehouse_path, table_name, "dt=" + daily_partition, file_name)
-            actual_output_target = get_target_from_url(actual_output_file)
+            actual_output_target = get_target_for_local_server(actual_output_file)
             self.assertTrue(actual_output_target.exists(), '{} not created'.format(file_name))
             actual_output = actual_output_target.open('r').read()
 
             expected_output_file = url_path_join(output_dir, file_name)
-            expected_output_target = get_target_from_url(expected_output_file)
+            expected_output_target = get_target_for_local_server(expected_output_file)
             expected_output = expected_output_target.open('r').read()
             self.assertEqual(actual_output, expected_output)

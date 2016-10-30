@@ -9,8 +9,8 @@ import datetime
 import tempfile
 import shutil
 
-from edx.analytics.tasks.tests.acceptance import AcceptanceTestCase
-from edx.analytics.tasks.url import url_path_join, get_target_from_url
+from edx.analytics.tasks.tests.acceptance import AcceptanceTestCase, get_target_for_local_server
+from edx.analytics.tasks.url import url_path_join
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ class ProblemResponseReportWorkflowAcceptanceTest(AcceptanceTestCase):
     def validate_marker(self, marker_path):
         """Ensure marker file was created."""
         marker_file = url_path_join(marker_path, '_SUCCESS')
-        marker_target = get_target_from_url(marker_file)
+        marker_target = get_target_for_local_server(marker_file)
         self.assertTrue(marker_target.exists())
 
     def validate_hive(self):
@@ -75,7 +75,7 @@ class ProblemResponseReportWorkflowAcceptanceTest(AcceptanceTestCase):
         hourly_partition = self.DATE.strftime(self.HOURLY_PARTITION_FORMAT)
         hive_partition = url_path_join(self.warehouse_path, "problem_response_location",
                                        "dt=" + hourly_partition, '000000_0')
-        partition_target = get_target_from_url(hive_partition)
+        partition_target = get_target_for_local_server(hive_partition)
         self.assertTrue(partition_target.exists())
 
     def validate_reports(self):
@@ -84,10 +84,10 @@ class ProblemResponseReportWorkflowAcceptanceTest(AcceptanceTestCase):
             report_file_name = '{}_problem_response.csv'.format(course_id)
 
             actual_output_file = os.path.join(self.report_output_root, report_file_name)
-            actual_output_target = get_target_from_url(actual_output_file)
+            actual_output_target = get_target_for_local_server(actual_output_file)
             self.assertTrue(actual_output_target.exists(), '{} not created'.format(actual_output_file))
             actual_output = actual_output_target.open('r').read()
 
             expected_output_file = os.path.join(self.data_dir, 'output', 'problem_response', report_file_name)
-            expected_output = get_target_from_url(expected_output_file).open('r').read()
+            expected_output = get_target_for_local_server(expected_output_file).open('r').read()
             self.assertEqual(actual_output, expected_output)
