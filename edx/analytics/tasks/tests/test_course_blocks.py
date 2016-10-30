@@ -6,13 +6,12 @@ import shutil
 import tempfile
 import logging
 from urllib import urlencode
-import luigi
 from requests.exceptions import HTTPError
 import httpretty
 from ddt import ddt, data, unpack
 
 from edx.analytics.tasks.course_blocks import (
-    CourseBlocksApiDataTask, CourseBlocksPartitionTask, PullCourseBlocksApiData,
+    CourseBlocksApiDataTask, PullCourseBlocksApiData,
 )
 from edx.analytics.tasks.tests import unittest
 from edx.analytics.tasks.tests.map_reduce_mixins import MapperTestMixin, ReducerTestMixin
@@ -36,16 +35,28 @@ class CourseBlocksTestMixin(object):
     def create_task(self):
         """Create the task"""
         self.task = self.task_class(
-            course_ids=(self.course_id,),
+            input_root=self.input_file,
             output_root=self.output_dir,
         )
 
     def setup_dirs(self):
         """Create temp input and output dirs."""
         self.temp_rootdir = tempfile.mkdtemp()
+        self.input_dir = os.path.join(self.temp_rootdir, "input")
+        os.mkdir(self.input_dir)
+        self.input_file = os.path.join(self.input_dir, "course_list.tsv")
+        self.create_input_file((self.course_id,))
+
         self.output_dir = os.path.join(self.temp_rootdir, "output")
         os.mkdir(self.output_dir)
         self.addCleanup(self.cleanup, self.temp_rootdir)
+
+    def create_input_file(self, course_ids):
+        """Create a tab-separated file containing the given course_ids."""
+        with open(self.input_file, 'w') as output:
+            for course_id in course_ids:
+                output.write("\t".join([course_id, 'Name', 'Org', 'Number', 'http://'] + ['\\N'] * 9))
+                output.write("\r\n")
 
     def cleanup(self, dirname):
         """Remove the temp directory only if it exists."""
@@ -58,11 +69,7 @@ class CourseBlocksApiDataTaskTest(CourseBlocksTestMixin, unittest.TestCase):
     """Tests the CourseBlocksApiDataTask basic functions. """
 
     def test_complete(self):
-        self.task = self.task_class(
-            output_root=self.output_dir,
-            course_ids=None,
-        )
-        self.assertEquals(self.task.course_ids, ())
+        self.create_task()
         self.assertFalse(self.task.complete())
 
         # Create the output_root/_SUCCESS file
@@ -70,21 +77,6 @@ class CourseBlocksApiDataTaskTest(CourseBlocksTestMixin, unittest.TestCase):
             success.write('')
         self.assertTrue(self.task.output().exists())
         self.assertTrue(self.task.complete())
-
-    @data(
-        ((), None),                          # empty
-        (('abc',), ('abc',)),                # tuple
-        (('abc', 'def'), ['abc', 'def']),    # array
-    )
-    @unpack
-    def test_requires(self, course_ids, course_ids_parameter):
-        self.task = self.task_class(
-            output_root=self.output_dir,
-            course_ids=course_ids_parameter,
-        )
-        # Ensure the required task was created with the course_ids list
-        required = self.task.requires()
-        self.assertEqual(required.course_ids, course_ids)
 
 
 @ddt
@@ -230,93 +222,8 @@ class CourseBlocksApiDataReducerTaskTest(CourseBlocksTestMixin, ReducerTestMixin
         )
 
 
-class CourseBlocksInputTask(luigi.Task):
-    """Use for the CourseBlocksTask.input_task parameter."""
-    output_root = luigi.Parameter()
-
-
 @ddt
-class CourseBlocksPartitionTaskTest(CourseBlocksTestMixin, unittest.TestCase):
-    """Tests the CourseBlocksPartitionTask completion status."""
-    task_class = CourseBlocksPartitionTask
-
-    def setUp(self):
-        super(CourseBlocksPartitionTaskTest, self).setUp()
-        self.setup_dirs()
-        self.create_task()
-
-    def create_task(self, **kwargs):
-        """Create the task"""
-        self.task = self.task_class(
-            warehouse_path=self.output_dir,
-            input_root=self.input_file,
-            **kwargs
-        )
-
-    def setup_dirs(self):
-        """Create temp input and output dirs."""
-        self.temp_rootdir = tempfile.mkdtemp()
-        self.output_dir = os.path.join(self.temp_rootdir, "output")
-        self.input_file = os.path.join(self.temp_rootdir, "input.txt")
-        self.addCleanup(self.cleanup, self.temp_rootdir)
-
-    def cleanup(self, dirname):
-        """Remove the temp directory only if it exists."""
-        if os.path.exists(dirname):
-            shutil.rmtree(dirname)
-
-    def create_input_file(self, course_ids, course_id_index):
-        """Create a tab-separated file containing the given course_ids at the correct course_id_index location."""
-        with open(self.input_file, 'w') as output:
-            for course_id in course_ids:
-                line = ['{}'.format(x) for x in range(course_id_index + 1)]
-                line[course_id_index] = course_id
-                output.write('{}\r\n'.format('\t'.join(line)))
-
-    @data(
-        (['abc', 'def', 'ghi'], ('abc', 'def', 'ghi'), 0),
-        (['klm', 'nop', 'nop'], ('klm', 'nop'), 3),  # removes duplicates
-        (['qrs'], ('qrs',), 8),
-    )
-    @unpack
-    def test_requires_with_input_root(self, course_ids, expected_course_ids, course_id_index):
-
-        # Test requires() with shifting course_id_index
-        self.task.course_id_index = course_id_index
-
-        # Initially, the CourseBlocksPartitionTask requires 1 task, the hive table task
-        requirements = tuple(self.task.requires())
-        self.assertEqual(len(requirements), 1)
-
-        # We can activate the data_task requirement by creating the input_root file
-        self.create_input_file(course_ids, course_id_index)
-
-        # Now, the CourseBlocksPartitionTask's requirements are complete
-        requirements = tuple(self.task.requires())
-        self.assertEqual(len(requirements), 2)
-
-        # And the course_ids have been passed along to the data task
-        self.assertEqual(requirements[0].course_ids, expected_course_ids)
-
-    @data(
-        (['abc', 'def', 'ghi'], ('abc', 'def', 'ghi')),
-        (('klm', 'nop'), ('klm', 'nop')),
-    )
-    @unpack
-    def test_requires_with_course_ids(self, course_ids, expected_course_ids):
-        # Test requires() with a course_ids list
-        self.create_task(course_ids=course_ids)
-
-        # The CourseBlocksPartitionTask's requirements are complete
-        requirements = tuple(self.task.requires())
-        self.assertEqual(len(requirements), 2)
-
-        # And the course_ids have been passed along to the data task
-        self.assertEqual(requirements[0].course_ids, expected_course_ids)
-
-
-@ddt
-class PullCourseBlocksApiDataTest(unittest.TestCase):
+class PullCourseBlocksApiDataTest(CourseBlocksTestMixin, unittest.TestCase):
     """Tests the PullCourseBlocksApiData task."""
 
     task_class = PullCourseBlocksApiData
@@ -326,32 +233,18 @@ class PullCourseBlocksApiDataTest(unittest.TestCase):
 
     def setUp(self):
         super(PullCourseBlocksApiDataTest, self).setUp()
-        self.setup_dirs()
-        self.create_task()
         httpretty.reset()
 
     def create_task(self, **kwargs):
         """Create the task."""
         args = dict(
             api_root_url=self.api_url,
-            warehouse_path=self.cache_dir,
-            course_ids=(self.course_id,),
+            warehouse_path=self.output_dir,
+            input_root=self.input_file,
         )
         args.update(**kwargs)
         self.task = self.task_class(**args)
         return self.task
-
-    def setup_dirs(self):
-        """Create temp cache dir."""
-        self.temp_rootdir = tempfile.mkdtemp()
-        self.cache_dir = os.path.join(self.temp_rootdir, "cache")
-        os.mkdir(self.cache_dir)
-        self.addCleanup(self.cleanup, self.temp_rootdir)
-
-    def cleanup(self, dirname):
-        """Remove the temp directory only if it exists."""
-        if os.path.exists(dirname):
-            shutil.rmtree(dirname)
 
     def mock_api_call(self, method, url, status_code=200, body='', **kwargs):
         """Register the given URL, and send data as a JSON string."""
@@ -372,7 +265,9 @@ class PullCourseBlocksApiDataTest(unittest.TestCase):
     @unpack
     def test_errors(self, status_code, expected_exception):
         course_ids = ('abc', 'def')
-        self.create_task(course_ids=course_ids)
+        self.create_task()
+        self.create_input_file(course_ids)
+
         self.mock_api_call('POST', self.auth_url, body=dict(access_token='token', expires_in=2000))
         params = dict(depth="all", requested_fields="children", all_blocks="true")
 
@@ -405,6 +300,7 @@ class PullCourseBlocksApiDataTest(unittest.TestCase):
 
     def test_cache(self):
         # The cache is clear, and the task is not complete
+        self.create_task()
         self.assertFalse(self.task.complete())
 
         # Mock the API call

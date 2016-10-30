@@ -1,12 +1,11 @@
 """
 Store course block details sourced from the Course Blocks API into a hive table.
 
-See LoadAllCourseBlocksWorkflow for details.
+See the CourseBlocksApiDataTask and CourseBlocksPartitionTask for details.
 """
 
 import logging
 import json
-import datetime
 import luigi
 from requests.exceptions import HTTPError
 
@@ -17,9 +16,8 @@ from edx.analytics.tasks.util.hive import (
     WarehouseMixin, BareHiveTableTask, HivePartitionTask,
 )
 from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
-from edx.analytics.tasks.util.record import Record, BooleanField, StringField, IntegerField, DEFAULT_NULL_VALUE
-from edx.analytics.tasks.decorators import workflow_entry_point
-from edx.analytics.tasks.course_list import TimestampPartitionMixin, CourseListPartitionTask
+from edx.analytics.tasks.util.record import Record, BooleanField, StringField, IntegerField
+from edx.analytics.tasks.course_list import TimestampPartitionMixin, CourseRecord, CourseListApiDataTask
 
 
 log = logging.getLogger(__name__)
@@ -56,9 +54,10 @@ class CourseBlockRecord(Record):
 class CourseBlocksDownstreamMixin(TimestampPartitionMixin, WarehouseMixin, OverwriteOutputMixin):
     """Common parameters used by the Course Blocks Data and Partition tasks."""
 
-    course_ids = luigi.Parameter(
-        is_list=True,
-        description='List of course_id values to fetch course_block data for.',
+    input_root = luigi.Parameter(
+        description='URL pointing to the course_list partition data, containing the list of courses whose blocks will '
+                    'be loaded.  Note that if this location does not already exist, it will be created by the '
+                    'CourseListPartitionTask.'
     )
     partition_format = luigi.Parameter(
         config_path={'section': 'course_blocks', 'name': 'partition_format'},
@@ -89,13 +88,30 @@ class PullCourseBlocksApiData(CourseBlocksDownstreamMixin, luigi.Task):
         description="Type of authentication required for the API call, e.g. jwt or bearer."
     )
 
+    def requires(self):
+        results = {
+            'course_list': CourseListApiDataTask(
+                date=self.date,
+                output_root=self.input_root,
+                overwrite=self.overwrite,
+            )
+        }
+        return results
+
     def run(self):
         self.remove_output_on_overwrite()
+
+        courses = []
+        with self.input()['course_list'].open('r') as course_list_file:
+            for line in course_list_file:
+                course = CourseRecord.from_tsv(line)
+                courses.append(course.course_id)
+
         client = EdxApiClient(token_type=self.api_token_type)
         params = dict(depth="all", requested_fields="children", all_blocks="true")
         counter = 0
         with self.output().open('w') as output_file:
-            for course_id in self.course_ids:  # pylint: disable=not-an-iterable
+            for course_id in courses:  # pylint: disable=not-an-iterable
                 params['course_id'] = course_id
                 try:
                     # Course Blocks are returned on one page
@@ -170,13 +186,11 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, MapReduceJobTask):
 
     def __init__(self, *args, **kwargs):
         super(CourseBlocksApiDataTask, self).__init__(*args, **kwargs)
-        if self.course_ids is None:
-            self.course_ids = ()
 
     def requires(self):
         return PullCourseBlocksApiData(
             date=self.date,
-            course_ids=self.course_ids,
+            input_root=self.input_root,
             overwrite=self.overwrite,
         )
 
@@ -333,45 +347,8 @@ class CourseBlocksTableTask(BareHiveTableTask):
 
 class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, MapReduceJobTaskMixin, HivePartitionTask):
     """
-    A single hive partition of course block data.
-
-    If no `course_ids` list is provided, then this task reads the `course_id` field out of the hive records in
-    `input_root`, and uses them to populate the CourseBlocksPartitionTask `data_task.course_ids` list.
-
-    **WARNING**
-
-    If no `course_ids` are provided, there is an implied requirement that the `input_root` exists so this task will run
-    without errors.  Because the CourseBlocksPartitionTask must know its list of `course_ids` before it can determine
-    its own requirements, this course_ids list constitutes a dynamic task dependency.  Because we use an outdated luigi
-    library, we are unable to take advantage of the dynamic dependencies feature which has been available since v1.2.1:
-
-        https://github.com/spotify/luigi/blob/master/doc/tasks.rst#dynamic-dependencies
-
-    So we have to trick luigi into allowing us to have dynamic dependencies by changing the requirements during the
-    task run.  The luigi.worker throws and catches a RuntimeError: "Unfulfilled dependencies at run time" exception
-    once, but then re-schedules the offending task to finish executing its dependent tasks.
-
-    To avoid this issue, you can ensure that the `input_root` exists by running the CourseListPartitionTask for the
-    current date partition before running this task.
+    A single hive partition of course block data, for all courses returned by CourseListApiDataTask.
     """
-    course_ids = luigi.Parameter(
-        is_list=True,
-        default=None,
-        description='List of course_id values to fetch course_block data for. '
-                    'Either `input_root` or a `course_ids` must be provided.'
-    )
-    input_root = luigi.Parameter(
-        default=None,
-        description='URL pointing to the course_list partition data, containing the list of courses to load. '
-                    'Either `input_root` or `course_ids` must be provided.'
-    )
-    course_id_index = luigi.IntParameter(
-        default=0,
-        config_path={'section': 'course-blocks', 'name': 'course_id_index'},
-        description='Index of the course_id field in records contained in input_root.  Tab-separated hive records are '
-                    'read raw from the input_root, and parsed into tuples.  This field indicates which item in the '
-                    'tuple contains the course_id.',
-    )
 
     # Write the output directly to the final destination and rely on the partition_location dir to
     # indicate whether or not it is complete. Note that this is a custom extension to luigi.
@@ -379,7 +356,6 @@ class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, MapReduceJobTaskMix
 
     def __init__(self, *args, **kwargs):
         super(CourseBlocksPartitionTask, self).__init__(*args, **kwargs)
-        assert self.input_root is not None or self.course_ids is not None, "Must provide input_root or course_ids."
 
     @property
     def hive_table_task(self):
@@ -392,7 +368,7 @@ class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, MapReduceJobTaskMix
     def data_task(self):
         return CourseBlocksApiDataTask(
             date=self.date,
-            course_ids=self.course_ids,
+            input_root=self.input_root,
             output_root=self.output_root,
             overwrite=self.overwrite,
             mapreduce_engine=self.mapreduce_engine,
@@ -414,96 +390,3 @@ class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, MapReduceJobTaskMix
         """
         return (super(CourseBlocksPartitionTask, self).complete() and
                 get_target_from_url(self.output_root).exists())
-
-    def requires(self):
-        """
-        Yields the hive_table_task, and once the course_ids list has been populated, the data_task.
-        """
-        if self.course_ids is None:
-            input_target = get_target_from_url(self.input_root)
-            if input_target.exists():
-                unique_course_ids = dict()
-                for line in input_target.open('r'):
-
-                    # Each line is from a hive table, so it's tab-separated
-                    record = tuple(line.rstrip('\r\n').split('\t'))
-
-                    # If the record contains a potentially valid course_id, add it to the list
-                    if len(record) > self.course_id_index:
-                        course_id = record[self.course_id_index]
-                        if course_id != DEFAULT_NULL_VALUE:
-                            unique_course_ids[course_id] = True
-
-                self.course_ids = sorted(unique_course_ids.keys())
-
-        if self.course_ids is not None:
-            yield self.data_task
-
-        yield self.hive_table_task
-
-
-@workflow_entry_point
-class LoadAllCourseBlocksWorkflow(WarehouseMixin, MapReduceJobTaskMixin, luigi.WrapperTask):
-    """
-    This task uses the edX Courses REST API to fetch all of the available courses, then uses that data to contact the
-    edX Course Blocks REST API for each course, to load all the course blocks in each course.
-
-    All of the tasks involved in this process create partitions and cache files, which are keyed off the `date`
-    parameter.  As this `date` parameter changes, new data will be fetched and processed.  This can be a
-    resource-intensive task, both for the pipeline and the edX REST API, so choose your `date`s with care.
-
-    The tasks in this workflow write their data to hive tables, which can be overridden using `hive_overwrite`.
-    See the CourseListPartitionTask and CourseBlocksPartitionTask for details on how the data is partitioned,
-    and the CourseListApiDataTask and CourseBlocksApiDataTask for details on how the REST API data is cached.
-
-    **WARNING**
-
-    Running this task may result in a temporary RuntimeError: "Unfulfilled dependencies at run time" exception thrown by
-    the luigi.worker, due to the dynamic dependency of CourseBlocksPartitionTask on CourseListPartitionTask.  The
-    luigi.worker will handle this error and reschedule the missing dependencies, however the error will still be visible
-    in the Traceback.
-
-    See CourseBlocksPartitionTask for details.
-    """
-    date = luigi.DateParameter(
-        default=datetime.datetime.utcnow().date(),
-        description='Date/time for the course list and blocks partitions, cache and manifest files. '
-                    'Default is UTC today.'
-    )
-    hive_overwrite = luigi.BooleanParameter(
-        default=False,
-        description='Whether or not to rebuild hive data from the REST API data.'
-    )
-
-    def requires(self):
-        """
-        Initialize the tasks in this workflow
-        """
-        # Args shared by all tasks
-        kwargs = dict(
-            mapreduce_engine=self.mapreduce_engine,
-            input_format=self.input_format,
-            lib_jar=self.lib_jar,
-            n_reduce_tasks=self.n_reduce_tasks,
-            remote_log_level=self.remote_log_level,
-            date=self.date,
-            overwrite=self.hive_overwrite,
-        )
-
-        # Initialize the course list partition task, partitioned on date
-        course_list_task = CourseListPartitionTask(
-            **kwargs
-        )
-
-        # Initialize the all course blocks data task, feeding
-        # in the course_list_task's output as input.
-        course_blocks_task = CourseBlocksPartitionTask(
-            input_root=course_list_task.output_root,
-            **kwargs
-        )
-
-        # Order is important here, and unintuitive.
-        # The course_blocks task requires the course_list task's output,
-        # but we have to yield the course_blocks task first.
-        yield course_blocks_task
-        yield course_list_task

@@ -29,14 +29,12 @@ class ProblemResponseReportWorkflowAcceptanceTest(AcceptanceTestCase):
         """Copy the input data into place."""
         super(ProblemResponseReportWorkflowAcceptanceTest, self).setUp()
 
-        # Copy course blocks hive partition data into warehouse
-        table_name = 'course_blocks'
-        input_dir = url_path_join(self.data_dir, 'output', table_name)
-        daily_partition = self.DATE.strftime(self.DAILY_PARTITION_FORMAT)
-        for input_file_name in ('_SUCCESS', 'part-00000', 'part-00001'):
-            src = url_path_join(input_dir, input_file_name)
-            dst = url_path_join(self.warehouse_path, table_name, "dt=" + daily_partition, input_file_name)
-            self.upload_file(src, dst)
+        # Copy course list and course blocks REST API data
+        for table_name in ('course_list', 'course_blocks'):
+            daily_partition = "dt=" + self.DATE.strftime(self.DAILY_PARTITION_FORMAT)
+            file_name = table_name + '.json'
+            self.upload_file(url_path_join(self.data_dir, 'input', file_name),
+                             url_path_join(self.warehouse_path, table_name + '_raw', daily_partition, file_name))
 
         # Copy tracking logs into hdfs
         self.upload_tracking_log(url_path_join(self.data_dir, 'input', self.TRACKING_LOG), self.DATE)

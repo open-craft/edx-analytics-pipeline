@@ -706,7 +706,8 @@ class ProblemResponseReportWorkflow(ProblemResponseTableMixin,
             **kwargs
         )
 
-        # Initialize the course list partition task, partitioned on date
+        # Initialize the course list partition task, partitioned on date, but do not run it;
+        #  just using it to provide the course_blocks_task's input_root.
         course_list_task = CourseListPartitionTask(
             date=self.date,
             **kwargs
@@ -738,8 +739,9 @@ class ProblemResponseReportWorkflow(ProblemResponseTableMixin,
             **kwargs
         )
 
-        # Only need to require the report_task, as the other tasks are dependencies of each other.
-        yield report_task
-        yield problem_response_location_task
-        yield problem_response_task
-        yield course_blocks_task
+        yield (
+            report_task,
+            problem_response_location_task,
+            problem_response_task,
+            course_blocks_task,
+        )

@@ -1,5 +1,5 @@
 """
-End to end test of the LoadAllCourseBlocksWorkflow task.
+End to end test of the CourseBlocksPartitionTask task.
 """
 
 import logging
@@ -11,9 +11,9 @@ from edx.analytics.tasks.url import url_path_join
 log = logging.getLogger(__name__)
 
 
-class LoadAllCourseBlocksWorkflowAcceptanceTest(AcceptanceTestCase):
+class CourseBlocksPartitionTaskAcceptanceTest(AcceptanceTestCase):
     """
-    Tests the LoadAllCourseBlocksWorkflow.
+    Tests the CourseBlocksPartitionTask.
     """
 
     DAILY_PARTITION_FORMAT = '%Y-%m-%d'
@@ -21,30 +21,24 @@ class LoadAllCourseBlocksWorkflowAcceptanceTest(AcceptanceTestCase):
 
     def setUp(self):
         """Copy the input data into place."""
-        super(LoadAllCourseBlocksWorkflowAcceptanceTest, self).setUp()
+        super(CourseBlocksPartitionTaskAcceptanceTest, self).setUp()
+        self.partition = "dt=" + self.DATE.strftime(self.DAILY_PARTITION_FORMAT)
 
-        # Copy course list hive partition data into warehouse
-        # Data is sourced from the course list acceptance task's expected output data.
-        table_name = 'course_list'
-        input_dir = url_path_join(self.data_dir, 'output', table_name)
-        daily_partition = self.DATE.strftime(self.DAILY_PARTITION_FORMAT)
-        for input_file_name in ('_SUCCESS', 'part-00000', 'part-00001'):
-            src = url_path_join(input_dir, input_file_name)
-            dst = url_path_join(self.warehouse_path, table_name, "dt=" + daily_partition, input_file_name)
-            self.upload_file(src, dst)
-
-        # Copy course blocks REST API data
-        file_name = 'course_blocks.json'
-        daily_partition = self.DATE.strftime(self.DAILY_PARTITION_FORMAT)
-        self.upload_file(url_path_join(self.data_dir, 'input', file_name),
-                         url_path_join(self.warehouse_path, 'course_blocks_raw', "dt=" + daily_partition, file_name))
+        # Copy course list and course blocks REST API data
+        for table_name in ('course_list', 'course_blocks'):
+            file_name = table_name + '.json'
+            self.upload_file(url_path_join(self.data_dir, 'input', file_name),
+                             url_path_join(self.warehouse_path, table_name + '_raw', self.partition, file_name))
 
     def test_partition_task(self):
-        """Run the LoadAllCourseBlocksWorkflow and test its output."""
+        """Run the CourseBlocksPartitionTask and test its output."""
         date = self.DATE.strftime('%Y-%m-%d')
+        input_root = url_path_join(self.warehouse_path, 'course_list', self.partition)
+
         self.task.launch([
-            'LoadAllCourseBlocksWorkflow',
+            'CourseBlocksPartitionTask',
             '--date', date,
+            '--input-root', input_root,
             '--n-reduce-tasks', str(self.NUM_REDUCERS),
         ])
 
@@ -56,9 +50,8 @@ class LoadAllCourseBlocksWorkflowAcceptanceTest(AcceptanceTestCase):
 
         table_name = 'course_blocks'
         output_dir = url_path_join(self.data_dir, 'output', table_name)
-        daily_partition = self.DATE.strftime(self.DAILY_PARTITION_FORMAT)
         for file_name in ('_SUCCESS', 'part-00000', 'part-00001'):
-            actual_output_file = url_path_join(self.warehouse_path, table_name, "dt=" + daily_partition, file_name)
+            actual_output_file = url_path_join(self.warehouse_path, table_name, self.partition, file_name)
             actual_output_target = get_target_for_local_server(actual_output_file)
             self.assertTrue(actual_output_target.exists(), '{} not created'.format(file_name))
             actual_output = actual_output_target.open('r').read()
