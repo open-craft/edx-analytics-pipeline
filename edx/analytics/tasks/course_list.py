@@ -103,10 +103,14 @@ class PullCourseListApiData(CourseListDownstreamMixin, luigi.Task):
         params = {
             'page_size': self.api_page_size,
         }
-        pagination = ('pagination', 'next')
+
+        def _pagination(response):
+            """Gets the next URL from the course list API response."""
+            return response.get('pagination', {}).get('next')
+
         counter = 0
         with self.output().open('w') as output_file:
-            for response in client.paginated_get(self.api_root_url, params=params, pagination_key=pagination):
+            for response in client.paginated_get(self.api_root_url, params=params, pagination_key=_pagination):
                 parsed_response = response.json()
                 for course in parsed_response.get('results', []):
                     output_file.write(json.dumps(course))

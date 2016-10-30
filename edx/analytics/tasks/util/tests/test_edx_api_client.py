@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import httpretty
 import requests
 from mock import patch
+from ddt import ddt, data, unpack
 
 from edx.analytics.tasks.tests import unittest
 from edx.analytics.tasks.tests.config import with_luigi_config
@@ -19,6 +20,7 @@ FAKE_ACCESS_TOKEN = 'notasecrettoken'
 FAKE_RESOURCE_URL = 'http://example.com/resource/'
 
 
+@ddt
 @httpretty.activate
 class EdxApiClientTestCase(unittest.TestCase):
     """Test the client"""
@@ -202,9 +204,8 @@ class EdxApiClientTestCase(unittest.TestCase):
         total_expected_requests = num_auth_token_requests + num_failed_requests + num_successful_requests
         self.assertEqual(len(httpretty.httpretty.latest_requests), total_expected_requests)
 
-    def test_paginated_get(self):
-        self.prepare_for_token_request()
-        response_bodies = [
+    @data(
+        ([
             {
                 'next': FAKE_RESOURCE_URL + '?offset=2&limit=2&foo=bar',
                 'results': [{'a': 1}, {'a': 2}]
@@ -217,7 +218,24 @@ class EdxApiClientTestCase(unittest.TestCase):
                 'next': None,
                 'results': [{'a': 5}, {'a': 6}]
             }
-        ]
+        ], 'next'),
+        ([
+            {
+                'pagination': {'next': FAKE_RESOURCE_URL + '?offset=2&limit=2&foo=bar'},
+                'results': [{'a': 1}, {'a': 2}]
+            },
+            {
+                'pagination': {'next': FAKE_RESOURCE_URL + '?offset=4&limit=2&foo=bar'},
+                'results': [{'a': 3}, {'a': 4}]
+            },
+            {
+                'results': [{'a': 5}, {'a': 6}]
+            }
+        ], lambda r: r.get('pagination', {}).get('next'))
+    )
+    @unpack
+    def test_paginated_get(self, response_bodies, pagination_key):
+        self.prepare_for_token_request()
         httpretty.register_uri('GET', FAKE_RESOURCE_URL,
                                responses=[
                                    httpretty.Response(body=json.dumps(response_bodies[0])),
@@ -227,7 +245,8 @@ class EdxApiClientTestCase(unittest.TestCase):
                                    httpretty.Response(body=json.dumps(response_bodies[2])),
                                ])
 
-        responses = list(self.client.paginated_get(FAKE_RESOURCE_URL, params={'limit': 2, 'foo': 'bar'}))
+        responses = list(self.client.paginated_get(FAKE_RESOURCE_URL, params={'limit': 2, 'foo': 'bar'},
+                                                   pagination_key=pagination_key))
         self.assertEqual([response.json() for response in responses], response_bodies)
 
         self.assertEqual(len(httpretty.httpretty.latest_requests), 6)

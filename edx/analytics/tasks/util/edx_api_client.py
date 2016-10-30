@@ -163,26 +163,28 @@ class EdxApiClient(object):
                 are received from the server in the response. If one is received the system implements an exponential
                 back-off and repeatedly requests the page until either the timeout expires, a fatal exception occurs, or
                 an OK response is received.
-            pagination_key (str or tuple): Used to locate the URL for the next page of data from the JSON-parsed
+            pagination_key (str or lambda): Used to locate the URL for the next page of data from the JSON-parsed
                 response.  If "pagination_key" is a string, then it names a field at the root of the response containing
                 the "next page" URL.  E.g., use "pagination_key='next'" for a response that looks like this:
                 {"results": [...], "next": "http://...", "previous": "http://..."}
 
-                If the next URL is nested inside the response structure, then provide a tuple of field names to which
-                point to the next page URL.  E.g., use "pagination_key=('pagination', 'next')" for a response that looks
-                like this:
+                If "pagination_key" is a lambda, it should return the next page url from the given response object.
+                E.g., use "pagination_key=lambda r: r['pagination']['next']" for a response that looks like this:
 
                 {"results": [...], "pagination": {"next": "http://...", "previous": "http://..."}}
 
         Yields: A single requests.Response object for each page of data received from the server.
         """
 
-        if isinstance(pagination_key, basestring):
-            pagination_tuple = (pagination_key,)
-        elif pagination_key is not None:
-            pagination_tuple = tuple(pagination_key)
-        else:
-            pagination_tuple = None
+        def get_next_url_from_response(response):
+            """Returns the next page's URL from the response, as located by pagination_key."""
+            response_obj = response.json()
+            if isinstance(pagination_key, basestring):
+                return response_obj.get(pagination_key)
+            elif callable(pagination_key):
+                return pagination_key(response_obj)
+            else:
+                return None
 
         def should_retry(error):
             """Retry the request if the response status code is in the set of status codes that are retryable."""
@@ -210,22 +212,18 @@ class EdxApiClient(object):
                 raw_response = self.authenticated_session.get(next_url)
 
             raw_response.raise_for_status()
-            return raw_response
 
-        def get_next_url_from_response(response):
-            """Returns the next page's URL from the response, as located by pagination_key."""
-            return reduce(lambda d, k: d.get(k, {}), pagination_tuple, response.json())
+            # Get next URL if pagination was requested
+            next_url = get_next_url_from_response(raw_response)
 
-        response = get_resource_with_retry()
-        yield response
-        if not pagination_key:
-            return
+            return raw_response, next_url
 
-        next_url_from_response = get_next_url_from_response(response)
-        while next_url_from_response:
-            response = get_resource_with_retry(next_url_from_response)
+        next_url = None
+        while True:
+            response, next_url = get_resource_with_retry(next_url)
             yield response
-            next_url_from_response = get_next_url_from_response(response)
+            if next_url is None:
+                break
 
 
 class SuppliedAuth(AuthBase):
