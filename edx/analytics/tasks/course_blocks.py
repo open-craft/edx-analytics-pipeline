@@ -282,7 +282,7 @@ class CourseBlocksApiDataTask(CourseBlocksDownstreamMixin, MapReduceJobTask):
 
     def complete(self):
         """
-        The current task is complete if the output_root/_SUCCESS file is present.
+        The task is complete if the output_root file is present.
         """
         return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
 
@@ -385,8 +385,6 @@ class CourseBlocksPartitionTask(CourseBlocksDownstreamMixin, MapReduceJobTaskMix
 
     def complete(self):
         """
-        The current task is complete if no overwrite was requested,
-        and the output_root is present.
+        The current task is complete if the output_root is present.
         """
-        return (super(CourseBlocksPartitionTask, self).complete() and
-                get_target_from_url(self.output_root).exists())
+        return get_target_from_url(self.output_root).exists()
