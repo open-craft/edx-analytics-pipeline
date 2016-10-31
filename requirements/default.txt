@@ -38,6 +38,3 @@ wsgiref==0.1.2 		# ZPL
 pip==1.5.6
 git+https://github.com/edx/luigi.git@ce1d96977ae1a75a178352a81245810b92faf1c7#egg=luigi 		# Apache License 2.0
 git+https://github.com/edx/pyinstrument.git@a35ff76df4c3d5ff9a2876d859303e33d895e78f#egg=pyinstrument     # BSD
-slumber>=0.7.1,<1.0  # required by edx-rest-api-client
-PyJWT>=1.1.0,<2.0
-edx-rest-api-client==1.6.0
