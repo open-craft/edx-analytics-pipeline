@@ -40,21 +40,19 @@ class ProblemResponseReportWorkflowAcceptanceTest(AcceptanceTestCase):
     def test_problem_response_report(self):
         """Run the ProblemResponseReportWorkflow task and test its output."""
         marker_path = url_path_join(self.test_out, 'marker-{}'.format(str(time.time())))
-        report_path = url_path_join(self.test_out, 'problem-response')
         report_date = self.DATE.strftime('%Y-%m-%d')
         self.task.launch([
             'ProblemResponseReportWorkflow',
             '--interval', '2016-09-01-2016-09-08',
             '--date', report_date,
             '--marker', marker_path,
-            '--output-root', report_path,
             '--n-reduce-tasks', str(self.NUM_REDUCERS),
         ])
 
         self.maxDiff = None
         self.validate_marker(marker_path)
         self.validate_hive()
-        self.validate_reports(report_path)
+        self.validate_reports()
 
     def validate_marker(self, marker_path):
         """Ensure marker file was created."""
@@ -70,11 +68,11 @@ class ProblemResponseReportWorkflowAcceptanceTest(AcceptanceTestCase):
         partition_target = get_target_for_local_server(hive_partition)
         self.assertTrue(partition_target.exists())
 
-    def validate_reports(self, report_path):
+    def validate_reports(self):
         """Check the generated reports against the expected output files."""
         for course_id in ('OpenCraft_PRDemo1_2016', 'OpenCraft_PRDemo2_2016'):
             report_file_name = '{}_problem_response.csv'.format(course_id)
-            actual_output_targets = self.get_targets_from_remote_path(report_path, report_file_name)
+            actual_output_targets = self.get_targets_from_remote_path(self.report_output_root, report_file_name)
             self.assertEqual(len(actual_output_targets), 1, '{} not created'.format(report_file_name))
             actual_output = actual_output_targets[0].open('r').read()
 

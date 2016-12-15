@@ -166,6 +166,10 @@ class AcceptanceTestCase(unittest.TestCase):
         self.test_src = url_path_join(self.test_root, 'src')
         self.test_out = url_path_join(self.test_root, 'out')
 
+        # Use a local dir for devstack testing, or s3/hdfs for production testing.
+        self.report_output_root = self.config.get('report_output_root',
+                                                  url_path_join(self.test_out, 'reports'))
+
         self.catalog_path = 'http://acceptance.test/api/courses/v2'
         database_name = 'test_' + self.identifier
         schema = 'test_' + self.identifier
@@ -222,6 +226,7 @@ class AcceptanceTestCase(unittest.TestCase):
                                  '"correct","answer","total_attempts","first_attempt_date","last_attempt_date"]',
                 'report_field_list_delimiter': '"|"',
                 'report_field_datetime_format': '%Y-%m-%dT%H:%M:%SZ',
+                'report_output_root': self.report_output_root,
                 'partition_format': '%Y-%m-%dT%H',
             },
             'edx-rest-api': {
