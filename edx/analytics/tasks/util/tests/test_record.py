@@ -1,8 +1,8 @@
 """Test the typed record utilities"""
 
 import datetime
-import dateutil
 import pickle
+import dateutil
 
 from ddt import data, ddt, unpack
 
@@ -15,6 +15,7 @@ from edx.analytics.tasks.util.record import (
 UNICODE_STRING = u'\u0669(\u0361\u0e4f\u032f\u0361\u0e4f)\u06f6'
 UTF8_BYTE_STRING = UNICODE_STRING.encode('utf8')
 UTC = dateutil.tz.tzutc()
+
 
 @ddt
 class RecordTestCase(unittest.TestCase):
@@ -34,7 +35,7 @@ class RecordTestCase(unittest.TestCase):
 
     def test_incorrect_type(self):
         with self.assertRaisesRegexp(
-                ValueError, "Unable to assign the value 4 to the field named \"name\": The value is not a string"
+            ValueError, "Unable to assign the value 4 to the field named \"name\": The value is not a string"
         ):
             SingleFieldRecord(4)
 
@@ -54,15 +55,15 @@ class RecordTestCase(unittest.TestCase):
     def test_class_with_other_vars(self):
         class WithOthers(Record):
             """A record with class-level non-Field variables defined."""
-            foo = 'foo'
+            foob = 'foo'
             name = StringField()
-            bar = 10
+            barb = 10
 
         test_record = WithOthers('baz')
 
-        self.assertEqual(test_record.foo, 'foo')
+        self.assertEqual(test_record.foob, 'foo')
         self.assertEqual(test_record.name, 'baz')
-        self.assertEqual(test_record.bar, 10)
+        self.assertEqual(test_record.barb, 10)
 
     def test_record_with_no_fields(self):
         test_record = NoFields()
@@ -73,7 +74,7 @@ class RecordTestCase(unittest.TestCase):
 
     def test_repr_round_trip(self):
         test_record = SampleStruct('foo', 0, datetime.date(2015, 11, 1))
-        self.assertEqual(test_record, eval(repr(test_record)))
+        self.assertEqual(test_record, eval(repr(test_record)))  # pylint: disable=eval-used
 
     def test_initialize_with_kwargs(self):
         test_record = TwoFieldRecord(value='bar', name='foo')
@@ -100,7 +101,7 @@ class RecordTestCase(unittest.TestCase):
 
     def test_mixed_same_arg_appears_twice(self):
         with self.assertRaisesRegexp(
-                TypeError, "Multiple values provided for the same field \"name\": 'a' and 'c'"
+            TypeError, "Multiple values provided for the same field \"name\": 'a' and 'c'"
         ):
             TwoFieldRecord('a', 'b', name='c')
 
@@ -170,7 +171,7 @@ class RecordTestCase(unittest.TestCase):
     )
     def test_from_string_tuple_length_mismatch(self, string_tuple):
         with self.assertRaisesRegexp(
-                ValueError, 'The length of the tuple of strings must exactly match the number of fields in the Record'
+            ValueError, 'The length of the tuple of strings must exactly match the number of fields in the Record'
         ):
             SampleStruct.from_string_tuple(string_tuple)
 
@@ -389,6 +390,7 @@ class RecordTestCase(unittest.TestCase):
 
         self.assertFalse(test_record is new_record)
         self.assertEqual(test_record, new_record)
+
 
 class NoFields(Record):
     """A record without any fields"""
