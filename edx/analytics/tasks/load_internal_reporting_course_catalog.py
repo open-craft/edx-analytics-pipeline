@@ -35,10 +35,12 @@ class LoadInternalReportingCourseCatalogMixin(WarehouseMixin, OverwriteOutputMix
     partner_short_codes = luigi.Parameter(
         default_from_config={'section': 'course-catalog-api', 'name': 'partner_short_codes'},
         is_list=True,
+        default=None,
         description="A list of partner short codes that we should fetch data for."
     )
     api_root_url = luigi.Parameter(
         config_path={'section': 'course-catalog-api', 'name': 'api_root_url'},
+        default=None,
         description="The base URL for the course catalog API. This URL should look like"
                     "https://catalog-service.example.com/api/v1/"
     )
