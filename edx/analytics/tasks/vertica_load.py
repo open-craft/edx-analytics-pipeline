@@ -1,6 +1,7 @@
 """
 Support for loading data into an HP Vertica database.
 """
+from collections import namedtuple
 import json
 import logging
 
@@ -22,22 +23,39 @@ except ImportError:
     # them, instead just fail noisily if we attempt to use these libraries.
     vertica_client_available = False  # pylint: disable-msg=C0103
 
+PROJECTION_TYPE_NORMAL = 'Normal'
+PROJECTION_TYPE_AGGREGATE = 'Aggregate'
+
+VerticaProjection = namedtuple('VerticaProjection',  # pylint: disable=invalid-name
+                               ['name', 'type', 'definition',])
+
 
 class VerticaCopyTaskMixin(OverwriteOutputMixin):
     """
     Parameters for copying a database into Vertica.
 
-        credentials: Path to the external access credentials file.
-        schema:  The schema to which to write.
-        insert_chunk_size:  The number of rows to insert at a time.
     """
     schema = luigi.Parameter(
-        config_path={'section': 'vertica-export', 'name': 'schema'}
+        config_path={'section': 'vertica-export', 'name': 'schema'},
+        description='The schema to which to write.',
     )
     credentials = luigi.Parameter(
-        config_path={'section': 'vertica-export', 'name': 'credentials'}
+        config_path={'section': 'vertica-export', 'name': 'credentials'},
+        description='Path to the external access credentials file.',
+    )
+    read_timeout = luigi.IntParameter(
+        config_path={'section': 'vertica-export', 'name': 'read_timeout'}
+    )
+    marker_schema = luigi.Parameter(
+        default=None,
+        description='The marker schema to which to write the marker table. marker_schema would '
+        'default to the schema value if the value here is None.'
     )
 
+    persistent_schema = luigi.Parameter(
+        default='experimental',
+        config_path={'section': 'vertica-export', 'name': 'persistent_schema'}
+    )
 
 class VerticaCopyTask(VerticaCopyTaskMixin, luigi.Task):
     """
@@ -98,6 +116,15 @@ class VerticaCopyTask(VerticaCopyTaskMixin, luigi.Task):
     def default_columns(self):
         """List of tuples defining name and definition of automatically-filled columns."""
         return [('created', 'TIMESTAMP DEFAULT NOW()')]
+
+    @property
+    def projections(self):
+        """Provides projection definitions to use after table creation and initialization to create projections.
+
+        Return value should be a list of VerticaProjection namedtuple objects.  The name and
+        definition fields may be templates using "{schema}" and "{table}".
+        """
+        return []
 
     def create_schema(self, connection):
         """
@@ -170,6 +197,80 @@ class VerticaCopyTask(VerticaCopyTaskMixin, luigi.Task):
         log.debug(query)
         connection.cursor().execute(query)
 
+    def _get_aggregate_projections(self):
+        """Get projections that are aggregates, and fill in values."""
+        return [
+            VerticaProjection
+            (
+                template.name.format(schema=self.schema, table=self.table),
+                template.type,
+                template.definition.format(schema=self.schema, table=self.table),
+            ) for template in self.projections if template.type == PROJECTION_TYPE_AGGREGATE
+        ]
+
+    def _get_nonaggregate_projections(self):
+        """Get projections that are not aggregates, and fill in values."""
+        return [
+            VerticaProjection
+            (
+                template.name.format(schema=self.schema, table=self.table),
+                template.type,
+                template.definition.format(schema=self.schema, table=self.table),
+            ) for template in self.projections if template.type != PROJECTION_TYPE_AGGREGATE
+        ]
+
+    def drop_aggregate_projections(self, connection):
+        """
+        Drop any projections that are aggregates.
+
+        Aggregate projections must be removed from a table before its contents can be deleted.
+        """
+        for projection in self._get_aggregate_projections():
+            query = "DROP PROJECTION IF EXISTS {name};".format(name=projection.name)
+            log.debug(query)
+            connection.cursor().execute(query)
+
+    def create_aggregate_projections(self, connection):
+        """
+        Define all aggregate projections on table.
+        """
+        projections = self._get_aggregate_projections()
+        for projection in projections:
+            query = "CREATE PROJECTION IF NOT EXISTS {name} {definition};".format(
+                name=projection.name, definition=projection.definition
+            )
+            log.debug(query)
+            connection.cursor().execute(query)
+
+        # If any projections were created, start a refresh as well.
+        if len(projections) > 0:
+            query = 'SELECT start_refresh();'
+            log.debug(query)
+            connection.cursor().execute(query)
+
+    def create_nonaggregate_projections(self, connection):
+        """
+        Define all projections on table.
+        """
+        for projection in self._get_nonaggregate_projections():
+            query = "CREATE PROJECTION IF NOT EXISTS {name} {definition};".format(
+                name=projection.name, definition=projection.definition
+            )
+            log.debug(query)
+            connection.cursor().execute(query)
+
+    def purge_deleted_records(self, connection):
+        """
+        Rewrite the table on disk to remove any deleted records that are no longer in use.
+        """
+        # TODO: doing a bulk delete + purge is an anti-pattern in Vertica! We should change our strategy.
+        if self.overwrite:
+            query = "SELECT PURGE_TABLE('{schema}.{table}')".format(
+                schema=self.schema, table=self.table
+            )
+            log.debug(query)
+            connection.cursor().execute(query)
+
     def update_id(self):
         """This update id will be a unique identifier for this insert on this table."""
         # For MySQL tasks, we take the hash of the task id, but since Vertica does not similarly
@@ -187,7 +288,9 @@ class VerticaCopyTask(VerticaCopyTaskMixin, luigi.Task):
                 credentials_target=self.input()['credentials'],
                 table=self.table,
                 schema=self.schema,
-                update_id=self.update_id()
+                update_id=self.update_id(),
+                read_timeout=self.read_timeout,
+                marker_schema=self.marker_schema,
             )
 
         return self.output_target
@@ -219,6 +322,10 @@ class VerticaCopyTask(VerticaCopyTaskMixin, luigi.Task):
         # clear table contents
         self.attempted_removal = True
         if self.overwrite:
+            # Before changing the current contents table, we have to make sure there
+            # are no aggregate projections on it.
+            self.drop_aggregate_projections(connection)
+
             # Use "DELETE" instead of TRUNCATE since TRUNCATE forces an implicit commit before it executes which would
             # commit the currently open transaction before continuing with the copy.
             query = "DELETE FROM {schema}.{table}".format(schema=self.schema, table=self.table)
@@ -245,9 +352,11 @@ class VerticaCopyTask(VerticaCopyTaskMixin, luigi.Task):
         if self.overwrite:
             # Clear the appropriate rows from the luigi Vertica marker table
             marker_table = self.output().marker_table  # side-effect: sets self.output_target if it's None
+            marker_schema = self.output().marker_schema
             try:
-                query = "DELETE FROM {schema}.{marker_table} where target_table='{schema}.{target_table}';".format(
+                query = "DELETE FROM {marker_schema}.{marker_table} where target_table='{schema}.{target_table}';".format(
                     schema=self.schema,
+                    marker_schema=marker_schema,
                     marker_table=marker_table,
                     target_table=self.table,
                 )
@@ -278,6 +387,11 @@ class VerticaCopyTask(VerticaCopyTaskMixin, luigi.Task):
         """The null sequence in the data to be copied.  Default is Hive NULL (\\N)"""
         return "'\\N'"
 
+    @property
+    def enclosed_by(self):
+        """The field's enclosing character. Default is empty string."""
+        return "''"
+
     def copy_data_table_from_target(self, cursor):
         """Performs the copy query from the insert source."""
         if isinstance(self.columns[0], basestring):
@@ -292,12 +406,13 @@ class VerticaCopyTask(VerticaCopyTaskMixin, luigi.Task):
         with self.input()['insert_source'].open('r') as insert_source_file:
             log.debug("Running stream copy from source file")
             cursor.copy(
-                "COPY {schema}.{table} ({cols}) FROM STDIN DELIMITER AS {delim} NULL AS {null} DIRECT ABORT ON ERROR NO COMMIT;".format(
+                "COPY {schema}.{table} ({cols}) FROM STDIN ENCLOSED BY {enclosed_by} DELIMITER AS {delim} NULL AS {null} DIRECT ABORT ON ERROR NO COMMIT;".format(
                     schema=self.schema,
                     table=self.table,
                     cols=column_names,
                     delim=self.copy_delimiter,
-                    null=self.copy_null_sequence
+                    null=self.copy_null_sequence,
+                    enclosed_by=self.enclosed_by,
                 ),
                 insert_source_file
             )
@@ -318,8 +433,14 @@ class VerticaCopyTask(VerticaCopyTaskMixin, luigi.Task):
             # create schema and table only if necessary:
             self.create_schema(connection)
             self.create_table(connection)
+            self.create_nonaggregate_projections(connection)
 
+            # we should do nothing between initialization and copying
+            # that would commit the transaction.
             self.init_copy(connection)
+
+            connection.cursor().execute("SET TIMEZONE TO 'GMT';")
+
             cursor = connection.cursor()
             self.copy_data_table_from_target(cursor)
 
@@ -330,8 +451,17 @@ class VerticaCopyTask(VerticaCopyTaskMixin, luigi.Task):
             # We commit only if both operations completed successfully.
             connection.commit()
             log.debug("Committed transaction.")
+
+            # If we don't do this, the deleted records will significantly impact query performance.
+            self.purge_deleted_records(connection)
+
+            # Once we are done with the regular load, go ahead
+            # and make sure that aggregate projections are also added.
+            # This may be slow, but they would cause commits anyway.
+            self.create_aggregate_projections(connection)
+
         except Exception as exc:
-            log.debug("Rolled back the transaction; exception raised: %s", str(exc))
+            log.exception("Rolled back the transaction; exception raised: %s", str(exc))
             connection.rollback()
             raise
         finally:
@@ -358,7 +488,7 @@ class CredentialFileVerticaTarget(VerticaTarget):
             values will not be executed.
     """
 
-    def __init__(self, credentials_target, schema, table, update_id):
+    def __init__(self, credentials_target, schema, table, update_id, read_timeout=None, marker_schema=None):
         with credentials_target.open('r') as credentials_file:
             cred = json.load(credentials_file)
             super(CredentialFileVerticaTarget, self).__init__(
@@ -368,7 +498,9 @@ class CredentialFileVerticaTarget(VerticaTarget):
                 password=cred.get('password'),
                 schema=schema,
                 table=table,
-                update_id=update_id
+                update_id=update_id,
+                read_timeout=read_timeout,
+                marker_schema=marker_schema,
             )
 
     def exists(self, connection=None):

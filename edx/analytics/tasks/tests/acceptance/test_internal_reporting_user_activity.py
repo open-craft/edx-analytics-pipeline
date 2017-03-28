@@ -7,7 +7,8 @@ import logging
 import datetime
 import luigi
 import pandas
-from edx.analytics.tasks.tests.acceptance import AcceptanceTestCase
+from edx.analytics.tasks.tests.acceptance import AcceptanceTestCase, when_vertica_available
+from edx.analytics.tasks.url import url_path_join
 
 
 log = logging.getLogger(__name__)
@@ -16,17 +17,12 @@ log = logging.getLogger(__name__)
 class InternalReportingUserActivityLoadAcceptanceTest(AcceptanceTestCase):
     """End-to-end test of the workflow to load the internal reporting warehouse's user activity table."""
 
-    INPUT_FILE = 'user_activity_tracking.log'
-    DATE_INTERVAL = luigi.DateIntervalParameter().parse('2014-05-01-2014-07-01')
+    DATE = '2014-07-01'
 
     def setUp(self):
         super(InternalReportingUserActivityLoadAcceptanceTest, self).setUp()
 
-        # Set up the mock LMS databases.
-        self.execute_sql_fixture_file('load_auth_user_for_internal_reporting_user_activity.sql')
-
-        # Put up the mock tracking log for user locations.
-        self.upload_tracking_log(self.INPUT_FILE, datetime.datetime(2014, 6, 29))
+        self.upload_file(os.path.join(self.data_dir, 'input', 'internal_reporting_user_activity'), url_path_join(self.warehouse_path, 'internal_reporting_user_activity', 'dt=2014-07-01', 'internal_reporting_user_activity'))
 
         # Prepare the history table.
         self.history_schema = self.vertica.schema_name + '_history'
@@ -44,12 +40,13 @@ class InternalReportingUserActivityLoadAcceptanceTest(AcceptanceTestCase):
             log.debug(insert_query)
             cursor.execute(insert_query)
 
+    @when_vertica_available
     def test_internal_reporting_user_activity(self):
         """Tests the workflow for the internal reporting user activity table, end to end."""
 
         self.task.launch([
             'InternalReportingUserActivityWorkflow',
-            '--interval', self.DATE_INTERVAL.to_string(),
+            '--date', self.DATE,
             '--n-reduce-tasks', str(self.NUM_REDUCERS),
             '--history-schema', self.history_schema,
             '--overwrite'
@@ -76,10 +73,15 @@ class InternalReportingUserActivityLoadAcceptanceTest(AcceptanceTestCase):
             date_column = 3
             event_type_column = 4
             event_count_column = 5
-            row_mapper = lambda row: (row[user_id_column], str(row[course_id_column]),
-                                      row[date_column].strftime('%Y-%m-%d'),
-                                      str(row[event_type_column]),
-                                      row[event_count_column])
+
+            def row_mapper(row):
+                return (
+                    row[user_id_column],
+                    str(row[course_id_column]),
+                    row[date_column].strftime('%Y-%m-%d'),
+                    str(row[event_type_column]),
+                    row[event_count_column]
+                )
             f_user_activity = set([row_mapper(row) for row in response])
 
             self.assertSetEqual(f_user_activity, expected_f_user_activity)

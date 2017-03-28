@@ -3,6 +3,7 @@
 from collections import namedtuple, defaultdict
 import csv
 from decimal import Decimal
+import json
 import logging
 from operator import attrgetter
 
@@ -11,7 +12,7 @@ import luigi.date_interval
 
 from edx.analytics.tasks.mapreduce import MapReduceJobTask, MapReduceJobTaskMixin
 from edx.analytics.tasks.url import get_target_from_url, url_path_join
-from edx.analytics.tasks.util.hive import HiveTableTask, HivePartition, WarehouseMixin
+from edx.analytics.tasks.util.hive import HiveTableTask, HivePartition, WarehouseMixin, hive_decimal_type
 from edx.analytics.tasks.util.id_codec import encode_id
 from edx.analytics.tasks.util.opaque_key_util import get_org_id_for_course
 from edx.analytics.tasks.reports.orders_import import OrderTableTask
@@ -39,11 +40,18 @@ ORDERITEM_FIELDS = [
     'user_email',
     'date_placed',
     'iso_currency_code',
+    'coupon_id',
+    'discount_amount',
+    'voucher_id',
+    'voucher_code',
     'status',
     'refunded_amount',
     'refunded_quantity',
     'payment_ref_id',  # This is the value to compare with the transactions.
+    'partner_short_code',
 ]
+
+ORDERITEM_FIELD_INDICES = {field_name: index for index, field_name in enumerate(ORDERITEM_FIELDS)}
 
 BaseOrderItemRecord = namedtuple('OrderItemRecord', ORDERITEM_FIELDS)  # pylint: disable=invalid-name
 
@@ -56,6 +64,7 @@ class OrderItemRecord(BaseOrderItemRecord):
             refunded_amount=Decimal(result.refunded_amount),  # pylint: disable=no-member
             line_item_price=Decimal(result.line_item_price),  # pylint: disable=no-member
             line_item_unit_price=Decimal(result.line_item_unit_price),  # pylint: disable=no-member
+            discount_amount=Decimal(result.discount_amount),  # pylint: disable=no-member
         )
         return result
 
@@ -116,6 +125,21 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
     """
 
     output_root = luigi.Parameter()
+    shoppingcart_partners = luigi.Parameter(
+        config_path={'section': 'financial-reports', 'name': 'shoppingcart-partners'},
+        description="JSON string containing a dictionary mapping organization IDs of White Label partners "
+        "with data in ShoppingCart to the corresponding Otto partner short code.  The short code to be used "
+        "for other organization IDs must be given as value for the key \"DEFAULT\", to have a default that "
+        "is not NULL.",
+    )
+
+    def __init__(self, *args, **kwargs):
+        super(ReconcileOrdersAndTransactionsTask, self).__init__(*args, **kwargs)
+        if self.shoppingcart_partners:
+            self.shoppingcart_partners_dict = json.loads(self.shoppingcart_partners)
+        else:
+            self.shoppingcart_partners_dict = {}
+        self.default_partner_short_code = self.shoppingcart_partners_dict.get("DEFAULT")
 
     def requires(self):
         yield (
@@ -132,19 +156,27 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
         if len(fields) == len(ORDERITEM_FIELDS):
             # Assume it's an order.
             record_type = OrderItemRecord.__name__
-            key = fields[-1]
-            # Convert nulls in 'product_detail', 'refunded_amount', 'refunded_quantity'.
-            if fields[10] == '\\N':
-                fields[10] = ''
-            if fields[16] == '\\N':
-                fields[16] = '0.0'
-            if fields[17] == '\\N':
-                fields[17] = '0'
+            key = fields[-2]  # payment_ref_id
+            # Convert Hive null values ('\\N') in fields like 'product_detail':
+            defaults = (
+                ('product_detail', ''),
+                ('refunded_amount', '0.0'),
+                ('refunded_quantity', '0'),
+                ('discount_amount', '0.0'),
+                ('coupon_id', None),
+                ('voucher_id', None),
+                ('voucher_code', ''),
+                ('partner_short_code', ''),
+            )
+            for field_name, default_value in defaults:
+                index = ORDERITEM_FIELD_INDICES[field_name]
+                if fields[index] == '\\N':
+                    fields[index] = default_value
 
         elif len(fields) == len(TRANSACTION_FIELDS):
             # Assume it's a transaction.
             record_type = TransactionRecord.__name__
-            key = fields[3]
+            key = fields[3]  # payment_ref_id
             # Convert nulls in 'transaction_fee'.
             if fields[6] == '\\N':
                 fields[6] = None
@@ -181,6 +213,11 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
         else:
             return "ERROR_WRONGSTATUS_{}".format(status)
 
+    def _get_partner(self, course_id):
+        """Heuristic to determine the partner short code of order items from ShoppingCart."""
+        org = get_org_id_for_course(course_id)
+        return self.shoppingcart_partners_dict.get(org) or self.default_partner_short_code
+
     def _extract_transactions(self, values):
         """
         Pulls orderitems and transactions out of input values iterable.
@@ -189,6 +226,10 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
         transactions = []
         for (record_type, fields) in values:
             if record_type == 'OrderItemRecord':
+                if not fields[ORDERITEM_FIELD_INDICES['partner_short_code']]:
+                    fields[ORDERITEM_FIELD_INDICES['partner_short_code']] = self._get_partner(
+                        fields[ORDERITEM_FIELD_INDICES['course_id']]
+                    )
                 orderitems.append(OrderItemRecord(*fields))
             elif record_type == 'TransactionRecord':
                 transactions.append(TransactionRecord(*fields))
@@ -225,9 +266,12 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
                 # Missing white-label is not an error, even if it's not balanced.
                 order_audit_code = 'ORDER_NOT_BALANCED'
                 orderitem_audit_code = 'NO_TRANS_WHITE_LABEL'
-            elif orderitem.line_item_unit_price == 0.0:
+            elif orderitem.line_item_price == 0.0:
+                # The order is for a free course, or has been discounted 100%, or an enrollment
+                # code has been used. We don't expect a transaction for such orders.
                 order_audit_code = 'ORDER_BALANCED'
                 orderitem_audit_code = 'NO_COST'
+
             # Note that we don't call "check_orderitem_wrongstatus" here, as the
             # existing status is generally sufficient.  In the case of "NO_COST"
             # honor enrollment orders, they may in fact be refunded when a user unenrolls,
@@ -325,7 +369,7 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
         elif trans_balance == 0.0:
             audit_code = "{}_WAS_REFUNDED".format(audit_code)
         elif (trans_balance == -1 * orderitem.line_item_price and
-                ('REFUND_AGAIN' in trans_audit_codes or 'REFUND_AGAIN_STATUS_NOT_REFUNDED' in trans_audit_codes)):
+              ('REFUND_AGAIN' in trans_audit_codes or 'REFUND_AGAIN_STATUS_NOT_REFUNDED' in trans_audit_codes)):
             audit_code = "{}_WAS_REFUNDED_TWICE".format(audit_code)
         elif trans_balance == 2 * orderitem.line_item_price and 'PURCHASE_AGAIN' in trans_audit_codes:
             audit_code = "{}_WAS_CHARGED_TWICE".format(audit_code)
@@ -596,6 +640,7 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
             audit_code[0],
             audit_code[1],
             audit_code[2],
+            orderitem.partner_short_code if orderitem else self.default_partner_short_code,
             orderitem.payment_ref_id if orderitem else transaction.payment_ref_id,
             orderitem.order_id if orderitem else None,
             encode_id(orderitem.order_processor, "order_id", orderitem.order_id) if orderitem else None,
@@ -621,6 +666,10 @@ class ReconcileOrdersAndTransactionsTask(ReconcileOrdersAndTransactionsDownstrea
             orderitem.line_item_price if orderitem else None,
             orderitem.line_item_unit_price if orderitem else None,
             orderitem.line_item_quantity if orderitem else None,
+            orderitem.coupon_id if orderitem else None,
+            orderitem.discount_amount if orderitem else None,
+            orderitem.voucher_id if orderitem else None,
+            orderitem.voucher_code if orderitem else None,
             orderitem.refunded_amount if orderitem else None,
             orderitem.refunded_quantity if orderitem else None,
             orderitem.user_id if orderitem else None,
@@ -639,6 +688,7 @@ OrderTransactionRecordBase = namedtuple("OrderTransactionRecord", [  # pylint: d
     "order_audit_code",
     "orderitem_audit_code",
     "transaction_audit_code",
+    "partner_short_code",
     "payment_ref_id",
     "order_id",
     "unique_order_id",
@@ -661,6 +711,10 @@ OrderTransactionRecordBase = namedtuple("OrderTransactionRecord", [  # pylint: d
     "order_line_item_price",
     "order_line_item_unit_price",
     "order_line_item_quantity",
+    "order_coupon_id",
+    "order_discount_amount",
+    "order_voucher_id",
+    "order_voucher_code",
     "order_refunded_amount",
     "order_refunded_quantity",
     "order_user_id",
@@ -704,6 +758,7 @@ class ReconciledOrderTransactionTableTask(ReconcileOrdersAndTransactionsDownstre
             ('order_audit_code', 'STRING'),
             ('orderitem_audit_code', 'STRING'),
             ('transaction_audit_code', 'STRING'),
+            ('partner_short_code', 'STRING'),
             ('payment_ref_id', 'STRING'),
             ('order_id', 'INT'),
             ('unique_order_id', 'STRING'),
@@ -715,18 +770,22 @@ class ReconciledOrderTransactionTableTask(ReconcileOrdersAndTransactionsDownstre
             ('transaction_payment_gateway_account_id', 'STRING'),
             ('transaction_type', 'STRING'),
             ('transaction_payment_method', 'STRING'),
-            ('transaction_amount', 'DECIMAL'),
+            ('transaction_amount', hive_decimal_type(12, 2)),
             ('transaction_iso_currency_code', 'STRING'),
-            ('transaction_fee', 'DECIMAL'),
-            ('transaction_amount_per_item', 'DECIMAL'),
-            ('transaction_fee_per_item', 'DECIMAL'),
+            ('transaction_fee', hive_decimal_type(12, 2)),
+            ('transaction_amount_per_item', hive_decimal_type(12, 2)),
+            ('transaction_fee_per_item', hive_decimal_type(12, 2)),
             ('order_line_item_id', 'INT'),
             ('unique_order_line_item_id', 'STRING'),
             ('order_line_item_product_id', 'INT'),
-            ('order_line_item_price', 'DECIMAL'),
-            ('order_line_item_unit_price', 'DECIMAL'),
+            ('order_line_item_price', hive_decimal_type(12, 2)),
+            ('order_line_item_unit_price', hive_decimal_type(12, 2)),
             ('order_line_item_quantity', 'INT'),
-            ('order_refunded_amount', 'DECIMAL'),
+            ('order_coupon_id', 'INT'),
+            ('order_discount_amount', hive_decimal_type(12, 2)),
+            ('order_voucher_id', 'INT'),
+            ('order_voucher_code', 'STRING'),
+            ('order_refunded_amount', hive_decimal_type(12, 2)),
             ('order_refunded_quantity', 'INT'),
             ('order_user_id', 'INT'),
             ('order_username', 'STRING'),
@@ -873,6 +932,7 @@ class LoadInternalReportingOrderTransactionsToWarehouse(ReconcileOrdersAndTransa
             ('order_audit_code', 'VARCHAR(255)'),
             ('orderitem_audit_code', 'VARCHAR(255)'),
             ('transaction_audit_code', 'VARCHAR(255)'),
+            ('partner_short_code', 'VARCHAR(8)'),
             ('payment_ref_id', 'VARCHAR(128)'),
             ('order_id', 'INTEGER'),
             ('unique_order_id', 'VARCHAR(255)'),
@@ -895,6 +955,10 @@ class LoadInternalReportingOrderTransactionsToWarehouse(ReconcileOrdersAndTransa
             ('order_line_item_price', 'DECIMAL(12,2)'),
             ('order_line_item_unit_price', 'DECIMAL(12,2)'),
             ('order_line_item_quantity', 'INTEGER'),
+            ('order_coupon_id', 'INTEGER'),
+            ('order_discount_amount', 'DECIMAL(12,2)'),
+            ('order_voucher_id', 'INTEGER'),
+            ('order_voucher_code', 'VARCHAR(255)'),
             ('order_refunded_amount', 'DECIMAL(12,2)'),
             ('order_refunded_quantity', 'INTEGER'),
             ('order_user_id', 'INTEGER'),

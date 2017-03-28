@@ -8,9 +8,9 @@ import tempfile
 import gnupg
 
 from edx.analytics.tasks.util.tempdir import make_temp_directory
+from edx.analytics.tasks.util.file_util import copy_file_to_file
 
 
-TRANSFER_BUFFER_SIZE = 1024 * 1024  # 1 MB
 log = logging.getLogger(__name__)
 key_cache = {}  # pylint: disable=invalid-name
 
@@ -35,7 +35,7 @@ def get_key_from_target(key_file_target):
 
 
 @contextmanager
-def make_encrypted_file(output_file, key_file_targets, recipients=None, progress=None):
+def make_encrypted_file(output_file, key_file_targets, recipients=None, progress=None, dir=None):
     """
     Creates a file object to be written to, whose contents will afterwards be encrypted.
 
@@ -45,7 +45,7 @@ def make_encrypted_file(output_file, key_file_targets, recipients=None, progress
         recipients:  an optional list of recipients to be loaded.  If not specified, uses all loaded keys.
         progress:  a function that is called periodically as progress is made.
     """
-    with make_temp_directory(prefix="encrypt") as temp_dir:
+    with make_temp_directory(prefix="encrypt", dir=dir) as temp_dir:
         # Use temp directory to hold gpg keys.
         gpg = gnupg.GPG(gnupghome=temp_dir)
         gpg.encoding = 'utf-8'
@@ -63,7 +63,8 @@ def make_encrypted_file(output_file, key_file_targets, recipients=None, progress
             recipients = [key['keyid'] for key in gpg.list_keys()]
         with open(temp_input_filepath, 'r') as temp_input_file:
             _encrypt_file(gpg, temp_input_file, temp_encrypted_filepath, recipients)
-        _copy_file_to_open_file(temp_encrypted_filepath, output_file, progress)
+        with open(temp_encrypted_filepath) as temp_encrypted_file:
+            copy_file_to_file(temp_encrypted_file, output_file, progress)
 
 
 def _import_key_files(gpg_instance, key_file_targets):
@@ -88,21 +89,3 @@ def _encrypt_file(gpg_instance, input_file, encrypted_filepath, recipients):
         armor=False,
     )
     log.info('Encryption complete.')
-
-
-def _copy_file_to_open_file(filepath, output_file, progress=None):
-    """Copies a filepath to a file object already opened for writing."""
-    log.info('Copying to output: %s', filepath)
-    with open(filepath, 'r') as src_file:
-        while True:
-            transfer_buffer = src_file.read(TRANSFER_BUFFER_SIZE)
-            if transfer_buffer:
-                output_file.write(transfer_buffer)
-                if progress:
-                    try:
-                        progress(len(transfer_buffer))
-                    except:  # pylint: disable=bare-except
-                        pass
-            else:
-                break
-    log.info('Copy to output complete')

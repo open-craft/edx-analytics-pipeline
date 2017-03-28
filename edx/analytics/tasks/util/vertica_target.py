@@ -18,7 +18,7 @@ class VerticaTarget(luigi.Target):
     """
     marker_table = 'table_updates'
 
-    def __init__(self, host, user, password, schema, table, update_id):
+    def __init__(self, host, user, password, schema, table, update_id, read_timeout=None, marker_schema=None):
         """
         Initializes a VerticaTarget instance.
 
@@ -46,8 +46,14 @@ class VerticaTarget(luigi.Target):
         self.schema = schema
         self.table = table
         self.update_id = update_id
-        # Default to using the schema data is being inserted into as the schema for the marker table.
-        self.marker_schema = schema
+
+        # Default to using the schema data is being inserted into as the schema for the marker table
+        # if no value is provided for marker_schema.
+        if marker_schema:
+            self.marker_schema = marker_schema
+        else:
+            self.marker_schema = schema
+        self.read_timeout = read_timeout
 
     def touch(self, connection=None):
         """
@@ -72,7 +78,9 @@ class VerticaTarget(luigi.Target):
         assert self.exists(connection)
 
     def exists(self, connection=None):  # pylint: disable-msg=W0221
+        close_connection = False
         if connection is None:
+            close_connection = True
             connection = self.connect()
             connection.autocommit = True
         cursor = connection.cursor()
@@ -89,6 +97,9 @@ class VerticaTarget(luigi.Target):
                 row = None
             else:
                 raise
+        finally:
+            if close_connection:
+                connection.close()
         return row is not None
 
     def connect(self, autocommit=False):
@@ -102,7 +113,7 @@ class VerticaTarget(luigi.Target):
         # vertica-python 0.5.0 changes the code for connecting to databases to use kwargs instead of a dictionary.
         # The 'database' parameter is included for DBAPI reasons and does not actually affect the session.
         connection = vertica_python.connect(user=self.user, password=self.password, host=self.host, port=self.port,
-                                            database="", autocommit=autocommit)
+                                            database="", autocommit=autocommit, read_timeout=self.read_timeout)
         return connection
 
     def create_marker_table(self):
@@ -111,6 +122,7 @@ class VerticaTarget(luigi.Target):
         Using a separate connection since the transaction might have to be reset.
         """
         connection = self.connect(autocommit=True)
+        self.create_marker_schema(connection)
         cursor = connection.cursor()
         try:
             cursor.execute(
@@ -129,3 +141,10 @@ class VerticaTarget(luigi.Target):
             else:
                 raise
         connection.close()
+
+    def create_marker_schema(self, connection):
+        """
+        Create the marker_schema if it does not exist.
+        """
+        query = "CREATE SCHEMA IF NOT EXISTS {marker_schema}".format(marker_schema=self.marker_schema)
+        connection.cursor().execute(query)

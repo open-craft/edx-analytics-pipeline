@@ -9,9 +9,10 @@ import luigi
 from luigi.hive import HiveQueryTask, HivePartitionTarget
 
 from edx.analytics.tasks.sqoop import SqoopImportFromMysql
-from edx.analytics.tasks.url import url_path_join
+from edx.analytics.tasks.url import url_path_join, ExternalURL
 from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
-from edx.analytics.tasks.util.hive import hive_database_name
+from edx.analytics.tasks.util.hive import hive_database_name, hive_decimal_type, WarehouseMixin, HivePartition
+from edx.analytics.tasks.vertica_load import VerticaCopyTask
 
 log = logging.getLogger(__name__)
 
@@ -19,14 +20,6 @@ log = logging.getLogger(__name__)
 class DatabaseImportMixin(object):
     """
     Provides general parameters needed for accessing RDBMS databases.
-
-    Parameters:
-
-        destination: The directory to write the output files to.
-        credentials: Path to the external access credentials file.
-        num_mappers: The number of map tasks to ask Sqoop to use.
-        verbose: Print more information while working.  Default is False.
-        import_date:  Date to assign to Hive partition.  Default is today's date.
 
     Example Credentials File::
 
@@ -38,18 +31,30 @@ class DatabaseImportMixin(object):
         }
     """
     destination = luigi.Parameter(
-        config_path={'section': 'database-import', 'name': 'destination'}
+        config_path={'section': 'database-import', 'name': 'destination'},
+        description='The directory to write the output files to.'
     )
     credentials = luigi.Parameter(
-        config_path={'section': 'database-import', 'name': 'credentials'}
+        config_path={'section': 'database-import', 'name': 'credentials'},
+        description='Path to the external access credentials file.',
     )
     database = luigi.Parameter(
-        default_from_config={'section': 'database-import', 'name': 'database'}
+        config_path={'section': 'database-import', 'name': 'database'},
     )
-
-    import_date = luigi.DateParameter(default=None)
-    num_mappers = luigi.Parameter(default=None, significant=False)
-    verbose = luigi.BooleanParameter(default=False, significant=False)
+    import_date = luigi.DateParameter(
+        default=None,
+        description='Date to assign to Hive partition.  Default is today\'s date, UTC.',
+    )
+    num_mappers = luigi.Parameter(
+        default=None,
+        significant=False,
+        description='The number of map tasks to ask Sqoop to use.',
+    )
+    verbose = luigi.BooleanParameter(
+        default=False,
+        significant=False,
+        description='Print more information while working.',
+    )
 
     def __init__(self, *args, **kwargs):
         super(DatabaseImportMixin, self).__init__(*args, **kwargs)
@@ -267,9 +272,16 @@ class ImportAuthUserProfileTask(ImportMysqlToHiveTableTask):
     def columns(self):
         return [
             ('user_id', 'INT'),
+            ('name', 'STRING'),
             ('gender', 'STRING'),
             ('year_of_birth', 'INT'),
             ('level_of_education', 'STRING'),
+            ('language', 'STRING'),
+            ('location', 'STRING'),
+            ('mailing_address', 'STRING'),
+            ('city', 'STRING'),
+            ('country', 'STRING'),
+            ('goals', 'STRING'),
         ]
 
 
@@ -369,14 +381,14 @@ class ImportShoppingCartOrderItem(ImportMysqlToHiveTableTask):
             ('user_id', 'INT'),
             ('status', 'STRING'),
             ('qty', 'int'),
-            ('unit_cost', 'DECIMAL'),
+            ('unit_cost', hive_decimal_type(12, 2)),
             ('line_desc', 'STRING'),
             ('currency', 'STRING'),
             ('fulfilled_time', 'TIMESTAMP'),
             ('report_comments', 'STRING'),
             ('refund_requested_time', 'TIMESTAMP'),
-            ('service_fee', 'DECIMAL'),
-            ('list_price', 'DECIMAL'),
+            ('service_fee', hive_decimal_type(12, 2)),
+            ('list_price', hive_decimal_type(12, 2)),
             ('created', 'TIMESTAMP'),
             ('modified', 'TIMESTAMP'),
         ]
@@ -460,6 +472,51 @@ class ImportShoppingCartCourseRegistrationCodeItem(ImportMysqlToHiveTableTask):
         ]
 
 
+class ImportShoppingCartCoupon(ImportMysqlToHiveTableTask):
+    """
+    Imports coupon definitions from an external LMS DB shopping cart table to both a
+    destination directory and a HIVE metastore.
+
+    """
+    @property
+    def table_name(self):
+        return 'shoppingcart_coupon'
+
+    @property
+    def columns(self):
+        return [
+            ('id', 'INT'),
+            ('code', 'STRING'),
+            ('description', 'STRING'),
+            ('course_id', 'STRING'),
+            ('percentage_discount', 'INT'),
+            ('created_at', 'TIMESTAMP'),
+            ('is_active', 'BOOLEAN'),
+            ('expiration_date', 'TIMESTAMP'),
+            ('created_by_id', 'INT'),
+        ]
+
+
+class ImportShoppingCartCouponRedemption(ImportMysqlToHiveTableTask):
+    """
+    Imports coupon redeptions from an external LMS DB shopping cart table to both a
+    destination directory and a HIVE metastore.
+
+    """
+    @property
+    def table_name(self):
+        return 'shoppingcart_couponredemption'
+
+    @property
+    def columns(self):
+        return [
+            ('id', 'INT'),
+            ('coupon_id', 'INT'),
+            ('order_id', 'INT'),
+            ('user_id', 'INT'),
+        ]
+
+
 class ImportEcommerceUser(ImportMysqlToHiveTableTask):
     """Ecommerce: Users: Imports users from an external ecommerce table to a destination dir."""
 
@@ -501,6 +558,8 @@ class ImportProductCatalog(ImportMysqlToHiveTableTask):
             ('is_discountable', 'STRING'),
             ('parent_id', 'INT'),
             ('product_class_id', 'INT'),
+            ('course_id', 'STRING'),
+            ('expires', 'TIMESTAMP'),
         ]
 
 
@@ -589,7 +648,7 @@ class ImportCurrentRefundRefundLineState(ImportMysqlToHiveTableTask):
     def columns(self):
         return [
             ('id', 'INT'),
-            ('line_credit_excl_tax', 'DECIMAL'),
+            ('line_credit_excl_tax', hive_decimal_type(12, 2)),
             ('quantity', 'INT'),
             ('status', 'STRING'),
             ('order_line_id', 'INT'),
@@ -615,10 +674,10 @@ class ImportCurrentOrderState(ImportMysqlToHiveTableTask):
             ('id', 'INT'),
             ('number', 'STRING'),
             ('currency', 'STRING'),
-            ('total_incl_tax', 'DECIMAL'),
-            ('total_excl_tax', 'DECIMAL'),
-            ('shipping_incl_tax', 'DECIMAL'),
-            ('shipping_excl_tax', 'DECIMAL'),
+            ('total_incl_tax', hive_decimal_type(12, 2)),
+            ('total_excl_tax', hive_decimal_type(12, 2)),
+            ('shipping_incl_tax', hive_decimal_type(12, 2)),
+            ('shipping_excl_tax', hive_decimal_type(12, 2)),
             ('shipping_method', 'STRING'),
             ('shipping_code', 'STRING'),
             ('status', 'STRING'),
@@ -653,20 +712,110 @@ class ImportCurrentOrderLineState(ImportMysqlToHiveTableTask):
             ('title', 'STRING'),
             ('upc', 'STRING'),
             ('quantity', 'INT'),
-            ('line_price_incl_tax', 'DECIMAL'),
-            ('line_price_excl_tax', 'DECIMAL'),
-            ('line_price_before_discounts_incl_tax', 'DECIMAL'),
-            ('line_price_before_discounts_excl_tax', 'DECIMAL'),
-            ('unit_cost_price', 'DECIMAL'),
-            ('unit_price_incl_tax', 'DECIMAL'),
-            ('unit_price_excl_tax', 'DECIMAL'),
-            ('unit_retail_price', 'DECIMAL'),
+            ('line_price_incl_tax', hive_decimal_type(12, 2)),
+            ('line_price_excl_tax', hive_decimal_type(12, 2)),
+            ('line_price_before_discounts_incl_tax', hive_decimal_type(12, 2)),
+            ('line_price_before_discounts_excl_tax', hive_decimal_type(12, 2)),
+            ('unit_cost_price', hive_decimal_type(12, 2)),
+            ('unit_price_incl_tax', hive_decimal_type(12, 2)),
+            ('unit_price_excl_tax', hive_decimal_type(12, 2)),
+            ('unit_retail_price', hive_decimal_type(12, 2)),
             ('status', 'STRING'),
             ('est_dispatch_date', 'TIMESTAMP'),
             ('order_id', 'INT'),
             ('partner_id', 'INT'),
             ('product_id', 'INT'),
             ('stockrecord_id', 'INT'),
+        ]
+
+
+class ImportCurrentOrderDiscountState(ImportMysqlToHiveTableTask):
+    """
+    Ecommerce: Current: Imports current order discount records from an ecommerce table to a
+    destination directory and a HIVE metastore.
+
+    """
+    @property
+    def table_name(self):
+        return 'order_orderdiscount'
+
+    @property
+    def columns(self):
+        return [
+            ('id', 'INT'),
+            ('category', 'STRING'),
+            ('offer_id', 'INT'),
+            ('offer_name', 'STRING'),
+            ('voucher_id', 'INT'),
+            ('voucher_code', 'STRING'),
+            ('frequency', 'INT'),
+            ('amount', hive_decimal_type(12, 2)),
+            ('message', 'STRING'),
+            ('order_id', 'INT'),
+        ]
+
+
+class ImportCouponVoucherIndirectionState(ImportMysqlToHiveTableTask):
+    """
+    Ecommerce: Current: Imports the voucher_couponvouchers table from the ecommerce database to
+    a destination directory and a HIVE metastore.
+
+    This table is just an extra layer of indirection in the source schema design and is required
+    to translate a 'couponvouchers_id' into a coupon id.
+    Coupons are represented as products in the product table, which is imported separately.
+    A coupon can have many voucher codes associated with it.
+    """
+    @property
+    def table_name(self):
+        return 'voucher_couponvouchers'
+
+    @property
+    def columns(self):
+        return [
+            ('id', 'INT'),
+            ('coupon_id', 'INT'),
+        ]
+
+
+class ImportCouponVoucherState(ImportMysqlToHiveTableTask):
+    """
+    Ecommerce: Current: Imports the voucher_couponvouchers_vouchers table from the ecommerce
+    database to a destination directory and a HIVE metastore.
+
+    A coupon can have many voucher codes associated with it. This table associates voucher IDs
+    with 'couponvouchers_id's, which are stored in the voucher_couponvouchers table and
+    have a 1:1 relationship to coupon IDs.
+    """
+    @property
+    def table_name(self):
+        return 'voucher_couponvouchers_vouchers'
+
+    @property
+    def columns(self):
+        return [
+            ('id', 'INT'),
+            ('couponvouchers_id', 'INT'),
+            ('voucher_id', 'INT'),
+        ]
+
+
+class ImportEcommercePartner(ImportMysqlToHiveTableTask):
+    """
+    Ecommerce: Current: Imports Partner information from an ecommerce table to a
+    destination directory and a HIVE metastore.
+    """
+
+    @property
+    def table_name(self):
+        return 'partner_partner'
+
+    @property
+    def columns(self):
+        return [
+            ('id', 'INT'),
+            ('code', 'STRING'),
+            ('name', 'STRING'),
+            ('short_code', 'STRING'),
         ]
 
 
@@ -693,6 +842,25 @@ class ImportCourseModeTask(ImportMysqlToHiveTableTask):
             ('expiration_datetime', 'TIMESTAMP'),
             ('description', 'STRING'),
             ('sku', 'STRING'),
+        ]
+
+
+class ImportGeneratedCertificatesTask(ImportMysqlToHiveTableTask):
+
+    @property
+    def table_name(self):
+        return 'certificates_generatedcertificate'
+
+    @property
+    def columns(self):
+        return [
+            ('user_id', 'INT'),
+            ('course_id', 'STRING'),
+            ('grade', 'STRING'),
+            ('status', 'STRING'),
+            ('mode', 'STRING'),
+            ('created_date', 'TIMESTAMP'),
+            ('modified_date', 'TIMESTAMP'),
         ]
 
 

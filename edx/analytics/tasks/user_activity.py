@@ -11,8 +11,9 @@ from edx.analytics.tasks.mapreduce import MapReduceJobTask, MapReduceJobTaskMixi
 from edx.analytics.tasks.pathutil import EventLogSelectionMixin, EventLogSelectionDownstreamMixin
 from edx.analytics.tasks.url import get_target_from_url
 import edx.analytics.tasks.util.eventlog as eventlog
-from edx.analytics.tasks.util import Week
 from edx.analytics.tasks.util.hive import WarehouseMixin, HiveTableTask, HivePartition, HiveQueryToMysqlTask
+from edx.analytics.tasks.util.weekly_interval import WeeklyIntervalMixin
+from edx.analytics.tasks.decorators import workflow_entry_point
 
 log = logging.getLogger(__name__)
 
@@ -34,12 +35,11 @@ class UserActivityTask(EventLogSelectionMixin, MapReduceJobTask):
     The output from this job is a table that represents the number of events seen for each user in each course in each
     category on each day.
 
-    Parameters:
-
-        output_root (str): path to store the output in.
     """
 
-    output_root = luigi.Parameter()
+    output_root = luigi.Parameter(
+        description='String path to store the output in.',
+    )
 
     def mapper(self, line):
         value = self.get_event_and_date_string(line)
@@ -78,7 +78,7 @@ class UserActivityTask(EventLogSelectionMixin, MapReduceJobTask):
             if event_type == 'problem_check':
                 labels.append(PROBLEM_LABEL)
 
-            if event_type.endswith("threads/create"):
+            if event_type.startswith('edx.forum.') and event_type.endswith('.created'):
                 labels.append(POST_FORUM_LABEL)
 
         if event_source in ('browser', 'mobile'):
@@ -116,8 +116,6 @@ class UserActivityTask(EventLogSelectionMixin, MapReduceJobTask):
         num_events = sum(values)
         if num_events > 0:
             yield key, num_events
-
-    combiner = reducer
 
     def output(self):
         return get_target_from_url(self.output_root)
@@ -197,7 +195,8 @@ class CourseActivityTask(UserActivityDownstreamMixin, HiveQueryToMysqlTask):
         )
 
 
-class CourseActivityWeeklyTask(CourseActivityTask):
+@workflow_entry_point
+class CourseActivityWeeklyTask(WeeklyIntervalMixin, CourseActivityTask):
     """
     Number of users performing each category of activity each ISO week.
 
@@ -214,35 +213,7 @@ class CourseActivityWeeklyTask(CourseActivityTask):
 
     TODO: update table name and schema to be consistent with other tables.
 
-    Parameters:
-
-        end_date (date): A day within the upper bound week. The week that contains this date will *not* be included in
-            the analysis, however, all of the data up to the first day of this week will be included. This is consistent
-            with all of our existing closed-open intervals.
-        weeks (int): The number of weeks to include in the analysis, counting back from the week that contains the
-            end_date.
     """
-
-    end_date = luigi.DateParameter(default=datetime.datetime.utcnow().date())
-    weeks = luigi.IntParameter(default=24)
-
-    @property
-    def interval(self):
-        """Given the parameters, compute the first and last date of the interval."""
-
-        if self.weeks == 0:
-            raise ValueError('Number of weeks to process must be greater than 0')
-
-        starting_week = self.get_iso_week_containing_date(self.end_date - datetime.timedelta(weeks=self.weeks))
-        ending_week = self.get_iso_week_containing_date(self.end_date)
-
-        # include all complete weeks up to but not including the week containing the end_date
-        return luigi.date_interval.Custom(starting_week.monday(), ending_week.monday())
-
-    def get_iso_week_containing_date(self, date):
-        """Returns a Week object corresponding to the given date."""
-        iso_year, iso_weekofyear, _iso_weekday = date.isocalendar()
-        return Week(iso_year, iso_weekofyear)
 
     @property
     def table(self):
@@ -336,15 +307,18 @@ class CourseActivityMonthlyTask(CourseActivityTask):
     following month pass in 1 to the "months" parameter. This will not analyze data for the month that contains the
     current day (since it is not complete). It will only compute data for the previous month.
 
-    Parameters:
-        end_date (date): A date within the month that will be the upper bound of the closed-open interval.
-        months (int): The number of months to include in the analysis, counting back from the month that contains the
-            end_date.
-
     """
 
-    end_date = luigi.DateParameter(default=datetime.datetime.utcnow().date())
-    months = luigi.IntParameter(default=6)
+    end_date = luigi.DateParameter(
+        default=datetime.datetime.utcnow().date(),
+        description='A date within the month that will be the upper bound of the closed-open interval. '
+        'Default is today, UTC.',
+    )
+    months = luigi.IntParameter(
+        default=6,
+        description='The number of months to include in the analysis, counting back from the month that contains '
+        'the end_date.',
+    )
 
     @property
     def interval(self):

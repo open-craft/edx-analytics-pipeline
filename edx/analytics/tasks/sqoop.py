@@ -17,6 +17,7 @@ from edx.analytics.tasks.util.overwrite import OverwriteOutputMixin
 
 log = logging.getLogger(__name__)
 
+METADATA_FILENAME = '_metadata'
 
 def load_sqoop_cmd():
     """Get path to sqoop command from Luigi configuration."""
@@ -34,21 +35,6 @@ class SqoopImportTask(OverwriteOutputMixin, luigi.hadoop.BaseHadoopJobTask):
     a simple map specifying the host, port, username password and
     database.
 
-    Parameters:
-        credentials: Path to the external access credentials file.
-        destination: The directory to write the output files to.
-        table_name: The name of the table to import.
-        num_mappers: The number of map tasks to ask Sqoop to use.
-        where:  A 'where' clause to be passed to Sqoop.  Note that
-            no spaces should be embedded and special characters should
-            be escaped.  For example:  --where "id\<50".
-        verbose: Print more information while working.
-        columns: A list of column names to be included.  Default is to include all columns.
-        null_string:  String to use to represent NULL values in output data.
-        fields_terminated_by:  defines the file separator to use on output.
-        delimiter_replacement:  defines a character to use as replacement for delimiters
-            that appear within data values, for use with Hive.  (Not specified by default.)
-
     Inherited parameters:
         overwrite:  Overwrite any existing imports.  Default is false.
 
@@ -62,22 +48,51 @@ class SqoopImportTask(OverwriteOutputMixin, luigi.hadoop.BaseHadoopJobTask):
         }
     """
     destination = luigi.Parameter(
-        config_path={'section': 'database-import', 'name': 'destination'}
+        config_path={'section': 'database-import', 'name': 'destination'},
+        description='The directory to write the output files to.',
     )
     credentials = luigi.Parameter(
-        config_path={'section': 'database-import', 'name': 'credentials'}
+        config_path={'section': 'database-import', 'name': 'credentials'},
+        description='Path to the external access credentials file.',
     )
     database = luigi.Parameter(
         config_path={'section': 'database-import', 'name': 'database'}
     )
-    num_mappers = luigi.Parameter(default=None)
-    verbose = luigi.BooleanParameter(default=False)
-    table_name = luigi.Parameter()
-    where = luigi.Parameter(default=None)
-    columns = luigi.Parameter(is_list=True, default=[])
-    null_string = luigi.Parameter(default=None)
-    fields_terminated_by = luigi.Parameter(default=None)
-    delimiter_replacement = luigi.Parameter(default=None)
+    num_mappers = luigi.Parameter(
+        default=None,
+        description='The number of map tasks to ask Sqoop to use.',
+    )
+    verbose = luigi.BooleanParameter(
+        default=False,
+        description='Print more information while working.',
+    )
+    table_name = luigi.Parameter(
+        description='The name of the table to import.',
+    )
+    where = luigi.Parameter(
+        default=None,
+        description='A "where" clause to be passed to Sqoop.  Note that '
+        'no spaces should be embedded and special characters should '
+        'be escaped.  For example:  --where "id\<50". ',
+    )
+    columns = luigi.Parameter(
+        is_list=True,
+        default=[],
+        description='A list of column names to be included.  Default is to include all columns.'
+    )
+    null_string = luigi.Parameter(
+        default=None,
+        description='String to use to represent NULL values in output data.',
+    )
+    fields_terminated_by = luigi.Parameter(
+        default=None,
+        description='Defines the file separator to use on output.',
+    )
+    delimiter_replacement = luigi.Parameter(
+        default=None,
+        description='Defines a character to use as replacement for delimiters '
+        'that appear within data values, for use with Hive.  Not specified by default.'
+    )
 
     def requires(self):
         return {
@@ -89,7 +104,7 @@ class SqoopImportTask(OverwriteOutputMixin, luigi.hadoop.BaseHadoopJobTask):
 
     def metadata_output(self):
         """Return target to which metadata about the task execution can be written."""
-        return get_target_from_url(url_path_join(self.destination, '.metadata'))
+        return get_target_from_url(url_path_join(self.destination, METADATA_FILENAME))
 
     def job_runner(self):
         """Use simple runner that gets args from the job and passes through."""
@@ -172,12 +187,16 @@ class SqoopImportFromMysql(SqoopImportTask):
     * delimiters escaped by backslash
     * delimiters optionally enclosed by single quotes (')
 
-    Parameters:
-        direct: use mysqldump's "direct" mode.  Requires that no set of columns be selected. Defaults to True.
-        mysql-delimiters:  use standard mysql delimiters (on by default).
     """
-    mysql_delimiters = luigi.BooleanParameter(default=True)
-    direct = luigi.BooleanParameter(default=True, significant=False)
+    mysql_delimiters = luigi.BooleanParameter(
+        default=True,
+        description='Use standard mysql delimiters (on by default).',
+    )
+    direct = luigi.BooleanParameter(
+        default=True,
+        significant=False,
+        description='Use mysqldumpi\'s "direct" mode.  Requires that no set of columns be selected.',
+    )
 
     def connection_url(self, cred):
         """Construct connection URL from provided credentials."""

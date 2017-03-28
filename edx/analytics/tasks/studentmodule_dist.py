@@ -26,26 +26,32 @@ csv.field_size_limit(FIELD_SIZE_LIMIT)
 
 
 ######################################################################
-###       Abstract Import and Histogram Calculation Section        ###
+#       Abstract Import and Histogram Calculation Section            #
 ######################################################################
 class HistogramTaskFromSqoopParamsMixin(object):
     """
     Mixin the parameters for HistogramsFromStudentModule that involve Sqoop
 
-    Parameters:
-        * name: Name of this run
-        * dest: URL of S3 location/directory where the task outputs
-        * credentials: creds for the edx-platform db
-        * sqoop_overwrite:  Overwrite any existing imports.  Default is false.
-        * num_mappers: number of mappers for Sqoop to use
     """
-    name = luigi.Parameter()
-    dest = luigi.Parameter()
-    credentials = luigi.Parameter(
-        config_path={'section': 'database-import', 'name': 'credentials'}
+    name = luigi.Parameter(
+        description='Name of this run',
     )
-    sqoop_overwrite = luigi.BooleanParameter(default=False)  # prefixed with sqoop for disambiguation
-    num_mappers = luigi.Parameter(default=None, significant=False)  # TODO: move to config
+    dest = luigi.Parameter(
+        description='URL of S3 location/directory where the task outputs',
+    )
+    credentials = luigi.Parameter(
+        config_path={'section': 'database-import', 'name': 'credentials'},
+        description='Credentials for the edx-platform db',
+    )
+    sqoop_overwrite = luigi.BooleanParameter(  # prefixed with sqoop for disambiguation
+        default=False,
+        description='Overwrite any existing imports.',
+    )
+    num_mappers = luigi.Parameter(   # TODO: move to config
+        default=None,
+        significant=False,
+        description='Number of mappers for Sqoop to use',
+    )
 
 
 class HistogramFromStudentModuleSqoopWorkflowBase(
@@ -106,7 +112,7 @@ class HistogramFromStudentModuleSqoopWorkflowBase(
 
 
 ######################################################################
-###           Abstract Export to Mysql Workflow Section            ###
+#             Abstract Export to Mysql Workflow Section              #
 ######################################################################
 class HistogramFromSqoopToMySQLWorkflowBase(
     HistogramTaskFromSqoopParamsMixin,
@@ -147,7 +153,7 @@ class HistogramFromSqoopToMySQLWorkflowBase(
 
 
 ######################################################################
-###               Grade Distribution Section                       ###
+#                 Grade Distribution Section                         #
 ######################################################################
 class GradeDistFromStudentModuleMixin(object):
     """
@@ -226,7 +232,7 @@ class GradeDistFromSqoopToMySQLWorkflow(
 
 
 ######################################################################
-###                Open Distribution Section                       ###
+#                  Open Distribution Section                         #
 ######################################################################
 class SeqOpenDistFromStudentModuleMixin(object):
     """

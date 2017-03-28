@@ -19,6 +19,7 @@ from edx.analytics.tasks.pathutil import PathSetTask
 from edx.analytics.tasks.url import ExternalURL
 from edx.analytics.tasks.url import get_target_from_url, url_path_join
 from edx.analytics.tasks.mysql_load import MysqlInsertTask, MysqlInsertTaskMixin
+from edx.analytics.tasks.decorators import workflow_entry_point
 import edx.analytics.tasks.util.eventlog as eventlog
 import edx.analytics.tasks.util.opaque_key_util as opaque_key_util
 
@@ -132,7 +133,7 @@ class ProblemCheckEventMixin(object):
         event = json.loads(event_string)
 
         # Get context information:
-        course_id = event.get('context').get('course_id')
+        course_id = eventlog.get_course_id(event)
         timestamp = event.get('timestamp')
         problem_id = event.get('problem_id')
         problem_display_name = event.get('context').get('module', {}).get('display_name', None)
@@ -450,7 +451,9 @@ class AnswerDistributionPerCourseMixin(object):
                     if 'answer_value_id_map' in answer_metadata:
                         answer_value_id = answer['answer_value_id']
                         answer_value_id_map = answer_metadata['answer_value_id_map']
-                        get_answer_value = lambda code: answer_value_id_map.get(code, UNMAPPED_ANSWER_VALUE)
+
+                        def get_answer_value(code):
+                            return answer_value_id_map.get(code, UNMAPPED_ANSWER_VALUE)
                         if isinstance(answer_value_id, basestring):
                             answer['answer'] = get_answer_value(answer_value_id)
                         elif isinstance(answer_value_id, list):
@@ -586,23 +589,31 @@ class BaseAnswerDistributionDownstreamMixin(object):
     """
     Base class for answer distribution calculations.
 
-    Parameters:
-        name: a unique identifier to distinguish one run from another.  It is used in
-            the construction of output filenames, so each run will have distinct outputs.
-        src:  a URL to the root location of input tracking log files.
-        dest:  a URL to the root location to write output file(s).
-        include:  a list of patterns to be used to match input files, relative to `src` URL.
-            The default value is ['*'].
-        manifest: a URL to a file location that can store the complete set of input files.
     """
-    name = luigi.Parameter()
-    src = luigi.Parameter(is_list=True)
-    dest = luigi.Parameter()
-    include = luigi.Parameter(is_list=True, default=('*',))
-    # A manifest file is required by hadoop if there are too many
-    # input paths. It hits an operating system limit on the number of
-    # arguments passed to the mapper process on the task nodes.
-    manifest = luigi.Parameter(default=None)
+    name = luigi.Parameter(
+        description='A unique identifier to distinguish one run from another.  It is used in '
+        'the construction of output filenames, so each run will have distinct outputs.',
+    )
+    src = luigi.Parameter(
+        is_list=True,
+        description='A list of URLs to the root location of input tracking log files.',
+    )
+    dest = luigi.Parameter(
+        description='A URL to the root location to write output file(s).',
+    )
+    include = luigi.Parameter(
+        is_list=True,
+        default=('*',),
+        description='A list of patterns to be used to match input files, relative to `src` URL. '
+        'The default value is [\'*\'].',
+    )
+    manifest = luigi.Parameter(
+        default=None,
+        description='A URL to a file location that can store the complete set of input files. '
+        'A manifest file is required by Hadoop if it hits the OS limit on the length '
+        'of the command to run when launching the job using the Hadoop CLI. '
+        'This file will be written to if it doesn\'t exist, and read from if it already does.',
+    )
 
 
 class BaseAnswerDistributionTask(MapReduceJobTask):
@@ -630,16 +641,18 @@ class ProblemCheckEvent(
 class AnswerDistributionDownstreamMixin(BaseAnswerDistributionDownstreamMixin):
     """
     Parameters needed for calculating answer distribution.
-
-    Additional Parameters:
-        answer_metadata:  optional file to provide information about particular answers.
-            Includes problem_display_name, input_type, response_type, and question.
-        base_input_format:  The input format to use on the first map reduce job in the chain. This job takes in the most
-            input and may need a custom input format.
-
     """
-    answer_metadata = luigi.Parameter(default=None)
-    base_input_format = luigi.Parameter(default=None)
+    answer_metadata = luigi.Parameter(
+        default=None,
+        description="optional file to provide information about particular answers. "
+        "Includes problem_display_name, input_type, response_type, and question.",
+    )
+
+    base_input_format = luigi.Parameter(
+        default=None,
+        description="The input format to use on the first map reduce job in the chain. "
+        "This job takes in the most input and may need a custom input format.",
+    )
 
 
 class AnswerDistributionPerCourse(
@@ -689,14 +702,6 @@ class AnswerDistributionOneFilePerCourseTask(AnswerDistributionDownstreamMixin, 
     """
     Groups answer distributions by course, producing a different file for each.
 
-    Most parameters are passed through to :py:class:`AnswerDistributionPerCourse`.
-    Additional parameters are defined by :py:class:`MultiOutputMapReduceJobTask`.:
-
-        output_root: location where the one-file-per-course outputs
-            are written.  This is distinct from `dest`, which is where
-            intermediate output is written.
-        delete_output_root: if True, recursively deletes the output_root at task creation.
-        marker:  a URL location where a marker file should be written.
     """
 
     def requires(self):
@@ -833,7 +838,7 @@ class AnswerDistributionToMySQLTaskWorkflow(
 ):
 
     # Override the parameter that normally defaults to false. This ensures that the table will always be overwritten.
-    overwrite = luigi.BooleanParameter(default=True)
+    overwrite = luigi.BooleanParameter(default=True, significant=False)
 
     @property
     def insert_source_task(self):
@@ -854,6 +859,7 @@ class AnswerDistributionToMySQLTaskWorkflow(
         )
 
 
+@workflow_entry_point
 class AnswerDistributionWorkflow(
         AnswerDistributionDownstreamMixin,
         MysqlInsertTaskMixin,
@@ -862,8 +868,13 @@ class AnswerDistributionWorkflow(
     """Calculate answer distribution and output to files and to database."""
 
     # Add additional args for MultiOutputMapReduceJobTask.
-    output_root = luigi.Parameter()
-    marker = luigi.Parameter()
+    output_root = luigi.Parameter(
+        description='Directory to store the output in.',
+    )
+    marker = luigi.Parameter(
+        description='A URL location where a marker file should be written. '
+        'Note: the task will not run if the marker file already exists.',
+    )
 
     def requires(self):
         kwargs = {
@@ -965,7 +976,7 @@ def get_problem_check_event(line):
     # contain the org and course name, but not the run.)  Course_id
     # information could be found from other events, but it would
     # require expanding the events being selected.
-    course_id = problem_data.get('context').get('course_id')
+    course_id = eventlog.get_course_id(event)
     if course_id is None:
         log.error("encountered explicit problem_check event with missing course_id: %s", event)
         return None

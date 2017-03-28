@@ -5,7 +5,7 @@ import textwrap
 
 import luigi
 from luigi.configuration import get_config
-from luigi.hive import HiveQueryTask, HivePartitionTarget, HiveQueryRunner
+from luigi.hive import HiveQueryTask, HivePartitionTarget, HiveQueryRunner, HiveTableTarget
 from luigi.parameter import Parameter
 
 from edx.analytics.tasks.url import url_path_join, get_target_from_url
@@ -21,12 +21,64 @@ def hive_database_name():
     return get_config().get('hive', 'database', 'default')
 
 
+def hive_version():
+    """
+    Returns the version of Hive that is declared in the configuration file. Defaults to 0.11 if it's not specified.
+
+    Returns: A tuple with each index representing a part of the version. For example: version="0.11.0.1" would return
+    (0, 11, 0, 1). The 0 indexed integer is the most significant part of the version number.
+    """
+    version_str = luigi.configuration.get_config().get('hive', 'version', '0.11')
+    return tuple([int(x) for x in version_str.split('.')])
+
+
+def hive_decimal_type(precision, scale):
+    """
+    Return the appropriate DECIMAL type declaration depending on the Hive version.
+
+    In versions >0.12, the syntax for declaring DECIMAL field types was changed. In Hive >0.12 using the DECIMAL type
+    without a precision or scale value defaults to the equivalent of DECIMAL(10, 0). This declaration only supports
+    round integers, so any fractional parts of the number are rounded off. In prior versions of Hive they are preserved.
+    If we are using an older version of Hive, which does not support the precision and scale arguments, then we should
+    use the bare "DECIMAL" declaration. Otherwise, we should include the precision and scale values.
+
+    Args:
+        precision: See the Java BigDecimal definition.
+        scale: See the Java BigDecimal definition.
+
+    Returns: The string that is used to declare the decimal type. It will either simply be "DECIMAL" or "DECIMAL(p, s)"
+    depending on the version of Hive.
+
+    """
+    version = hive_version()
+    if version[0] == 0 and version[1] < 13:
+        return 'DECIMAL'
+    else:
+        return 'DECIMAL({0},{1})'.format(precision, scale)
+
+
 class WarehouseMixin(object):
     """Task that is aware of the data warehouse."""
 
     warehouse_path = luigi.Parameter(
-        config_path={'section': 'hive', 'name': 'warehouse_path'}
+        config_path={'section': 'hive', 'name': 'warehouse_path'},
+        description='A URL location of the data warehouse.',
     )
+
+    def hive_partition_path(self, table_name, partition_value, partition_key='dt'):
+        """
+        Given a table name and partition value return the full URL of the folder for that partition in the warehouse.
+
+        Arguments:
+            table_name (str): The name of the hive table.
+            partition_value (object): Usually a string specifying the partition in the table. If it is a `date` object
+                it will be serialized to a ISO8601 formatted date string. This is a common use case.
+            partition_key (str): The partition key. This is usually "dt".
+        """
+        if hasattr(partition_value, 'isoformat'):
+            partition_value = partition_value.isoformat()
+        partition = HivePartition(partition_key, partition_value)
+        return url_path_join(self.warehouse_path, table_name, partition.path_spec) + '/'
 
 
 class HiveTableTask(WarehouseMixin, OverwriteOutputMixin, HiveQueryTask):
@@ -124,6 +176,172 @@ class HiveTableTask(WarehouseMixin, OverwriteOutputMixin, HiveQueryTask):
         return OverwriteAwareHiveQueryRunner()
 
 
+# TODO: rename this to HiveTableTask once the old one is removed
+class BareHiveTableTask(WarehouseMixin, OverwriteOutputMixin, HiveQueryTask):
+    """
+    Abstract class that represents the metadata associated with a Hive table.
+
+    Note that all this task does is ensure that the table is created, it does not populate it with any data, simply runs
+    the DDL commands to create the table.
+
+    Also note that it will not change the schema of the table if it already exists unless the overwrite parameter is
+    set to True.
+    """
+
+    def query(self):
+        partition_clause = ''
+        if self.partition_by:
+            partition_clause = 'PARTITIONED BY ({partition_by} STRING)'.format(partition_by=self.partition_by)
+
+        if self.overwrite:
+            drop_on_overwrite = 'DROP TABLE IF EXISTS {table};'.format(table=self.table)
+        else:
+            drop_on_overwrite = ''
+
+        query_format = """
+            USE {database_name};
+            {drop_on_overwrite}
+            CREATE EXTERNAL TABLE IF NOT EXISTS {table} (
+                {col_spec}
+            )
+            {partition_clause}
+            {table_format}
+            LOCATION '{location}';
+        """
+
+        query = query_format.format(
+            database_name=hive_database_name(),
+            table=self.table,
+            col_spec=','.join([' '.join(c) for c in self.columns]),
+            location=self.table_location,
+            table_format=self.table_format,
+            partition_clause=partition_clause,
+            drop_on_overwrite=drop_on_overwrite
+        )
+
+        query = textwrap.dedent(query)
+
+        return query
+
+    @property
+    def partition_by(self):
+        """The partitioning key name. Specify None to create a table that is not partitioned."""
+        raise NotImplementedError
+
+    @property
+    def table(self):
+        """Provides name of Hive database table."""
+        raise NotImplementedError
+
+    @property
+    def table_format(self):
+        """Provides format of Hive database table's data."""
+        return "ROW FORMAT DELIMITED FIELDS TERMINATED BY '\\t'"
+
+    @property
+    def table_location(self):
+        """Provides root location of Hive database table's data."""
+        return url_path_join(self.warehouse_path, self.table) + '/'
+
+    @property
+    def columns(self):
+        """
+        Provides definition of columns in Hive.
+
+        This should define a list of (name, definition) tuples, where
+        the definition defines the Hive type to use. For example,
+        ('first_name', 'STRING').
+
+        """
+        raise NotImplementedError
+
+    def output(self):
+        return HiveTableTarget(
+            self.table, database=hive_database_name()
+        )
+
+    def job_runner(self):
+        return OverwriteAwareHiveQueryRunner()
+
+    def remove_output_on_overwrite(self):
+        # Note that the query takes care of actually removing the old partition.
+        if self.overwrite:
+            self.attempted_removal = True
+
+
+class HivePartitionTask(WarehouseMixin, OverwriteOutputMixin, HiveQueryTask):
+    """
+    Abstract class that represents the metadata associated with a partition in a Hive table.
+
+    Note that all this task does is ensure that the partition is created, it does not populate it with any data, simply
+    runs the DDL commands to create the partition.
+    """
+
+    partition_value = luigi.Parameter()
+
+    def query(self):
+        if self.overwrite:
+            drop_on_overwrite = 'ALTER TABLE {table} DROP IF EXISTS PARTITION ({partition.query_spec});'.format(
+                table=self.hive_table_task.table,
+                partition=self.partition
+            )
+        else:
+            drop_on_overwrite = ''
+
+        query_format = """
+            USE {database_name};
+            {drop_on_overwrite}
+            ALTER TABLE {table} ADD IF NOT EXISTS PARTITION ({partition.query_spec});
+        """
+
+        query = query_format.format(
+            database_name=hive_database_name(),
+            table=self.hive_table_task.table,
+            partition=self.partition,
+            drop_on_overwrite=drop_on_overwrite
+        )
+
+        return textwrap.dedent(query)
+
+    @property
+    def hive_table_task(self):
+        """Returns a reference to the task that represents the table that this partition is part of."""
+        raise NotImplementedError
+
+    @property
+    def data_task(self):
+        """Returns a luigi task that is used to insert real data into this partition."""
+        return None
+
+    @property
+    def partition(self):
+        """Returns a HivePartition object that represents the partition."""
+        return HivePartition(self.hive_table_task.partition_by, self.partition_value)
+
+    @property
+    def partition_location(self):
+        """Returns the full URL of the partition. This allows data to be written to the partition by external systems"""
+        return url_path_join(self.hive_table_task.table_location, self.partition.path_spec + '/')
+
+    def requires(self):
+        if self.data_task is not None:
+            yield self.data_task
+        yield self.hive_table_task
+
+    def output(self):
+        return HivePartitionTarget(
+            self.hive_table_task.table, self.partition.as_dict(), database=hive_database_name(), fail_missing_table=True
+        )
+
+    def job_runner(self):
+        return OverwriteAwareHiveQueryRunner()
+
+    def remove_output_on_overwrite(self):
+        # Note that the query takes care of actually removing the old partition.
+        if self.overwrite:
+            self.attempted_removal = True
+
+
 class OverwriteAwareHiveQueryRunner(HiveQueryRunner):
     """A custom hive query runner that logs the query being executed and is aware of the "overwrite" option."""
 
@@ -216,8 +434,14 @@ class HiveTableFromParameterQueryTask(HiveTableFromQueryTask):  # pylint: disabl
 class HiveQueryToMysqlTask(WarehouseMixin, MysqlInsertTask):
     """Populates a MySQL table with the results of a hive query."""
 
-    overwrite = luigi.BooleanParameter(default=True)  # Overwrite the MySQL data?
-    hive_overwrite = luigi.BooleanParameter(default=False)
+    overwrite = luigi.BooleanParameter(
+        default=True,
+        description='If True, overwrite the MySQL data.',
+    )
+    hive_overwrite = luigi.BooleanParameter(
+        default=False,
+        description='If True, overwrite the hive data.',
+    )
 
     SQL_TO_HIVE_TYPE = {
         'varchar': 'STRING',

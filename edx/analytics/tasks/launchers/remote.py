@@ -15,7 +15,7 @@ EC2_INVENTORY_PATH = os.path.join(STATIC_FILES_PATH, 'ec2.py')
 
 REMOTE_DATA_DIR = '/var/lib/analytics-tasks'
 REMOTE_LOG_DIR = '/var/log/analytics-tasks'
-
+ANSIBLE_MAX_RETRY = 3
 
 def main():
     """Parse arguments and run the remote task."""
@@ -40,6 +40,7 @@ def main():
     parser.add_argument('--sudo-user', help='execute the shell command as this user on the cluster', default='hadoop')
     parser.add_argument('--workflow-profiler', choices=['pyinstrument'], help='profiler to run on the launch-task process', default=None)
     parser.add_argument('--wheel-url', help='url of the wheelhouse', default=None)
+    parser.add_argument('--virtualenv-extra-args', help='additional arguments passed to virtualenv command when creating the virtual environment', default=None)
     parser.add_argument('--skip-setup', action='store_true', help='assumes the environment has already been configured and you can simply run the task')
     arguments, extra_args = parser.parse_known_args()
     arguments.launch_task_arguments = extra_args
@@ -78,7 +79,16 @@ def run_task_playbook(inventory, arguments, uid):
         extra_vars = convert_args_to_extra_vars(arguments, uid)
         args = ['task.yml', '-e', extra_vars]
         prep_result = run_ansible(tuple(args), arguments, executable='ansible-playbook')
+
+        retry = 0
+        while prep_result !=0 and retry < ANSIBLE_MAX_RETRY:
+            log('ANSIBLE RUN RETURNED NON-ZERO EXIT STATUS: {0}'.format(prep_result))
+            log('RETRYING')
+            retry += 1
+            prep_result = run_ansible(tuple(args), arguments, executable='ansible-playbook')
+
         if prep_result != 0:
+            log('ANSIBLE RUN FAILED AFTER {0} RETRIES'.format(ANSIBLE_MAX_RETRY))
             return prep_result
 
     data_dir = os.path.join(REMOTE_DATA_DIR, uid)
@@ -153,13 +163,12 @@ def convert_args_to_extra_vars(arguments, uid):
         extra_vars['secure_config_branch'] = arguments.secure_config_branch
     if arguments.secure_config:
         extra_vars['secure_config'] = arguments.secure_config
-    if arguments.wheel_url:
-        extra_vars['install_env'] = {
-            'WHEEL_URL': arguments.wheel_url,
-            'WHEEL_PYVER': '2.7'
-        }
+    if arguments.wheel_url is not None:
+        extra_vars['wheel_url'] = arguments.wheel_url
     if arguments.vagrant_path or arguments.host:
         extra_vars['write_luigi_config'] = False
+    if arguments.virtualenv_extra_args:
+        extra_vars['virtualenv_extra_args'] = arguments.virtualenv_extra_args
     return json.dumps(extra_vars)
 
 
@@ -196,7 +205,7 @@ def parse_vagrant_ssh_config(arguments):
         elif key == "Port":
             port = value
         elif key == "IdentityFile":
-            arguments.private_key = value
+            arguments.private_key = value.strip('"')
 
     arguments.host = hostname + ':' + port
 

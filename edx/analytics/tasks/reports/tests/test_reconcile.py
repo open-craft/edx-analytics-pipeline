@@ -3,6 +3,7 @@
 from ddt import ddt, data, unpack
 
 from edx.analytics.tasks.tests import unittest
+from edx.analytics.tasks.tests.config import with_luigi_config
 from edx.analytics.tasks.tests.map_reduce_mixins import MapperTestMixin, ReducerTestMixin
 from edx.analytics.tasks.reports.reconcile import (
     ReconcileOrdersAndTransactionsTask,
@@ -39,6 +40,10 @@ class ReconciliationTaskMixin(object):
             'line_item_price': '50.00',
             'line_item_unit_price': '50.00',
             'line_item_quantity': '1',
+            'coupon_id': '',
+            'discount_amount': '0',
+            'voucher_id': '',
+            'voucher_code': '',
             'product_class': 'seat',  # e.g. seat, donation
             'course_id': 'edx/demo_course/2014',  # Was called course_key
             'product_detail': 'verified',  # contains course mode
@@ -50,6 +55,7 @@ class ReconciliationTaskMixin(object):
             'refunded_amount': '0.0',
             'refunded_quantity': '0',
             'payment_ref_id': DEFAULT_REF_ID,
+            'partner_short_code': 'edx' if kwargs.get('order_processor') != 'shoppingcart' else '',
         }
         if is_refunded:
             params.update(**{
@@ -210,6 +216,7 @@ class ReconciliationTaskReducerTest(ReconciliationTaskMixin, ReducerTestMixin, u
             'order_audit_code': 'ERROR_ORDER_NOT_BALANCED',
             'orderitem_audit_code': 'ERROR_NO_TRANSACTION',
             'transaction_audit_code': 'NO_TRANSACTION',
+            'partner_short_code': 'edx',
             'transaction_date': None,
             'transaction_id': None,
             'unique_transaction_id': None,
@@ -223,6 +230,37 @@ class ReconciliationTaskReducerTest(ReconciliationTaskMixin, ReducerTestMixin, u
             'transaction_amount_per_item': None,
             'transaction_fee_per_item': None,
         })
+
+    @data(
+        ('otto', 'course-v1:MITx+15.071x_3+1T2016', 'edx', 'edx'),
+        ('otto', 'course-v1:MITx+15.071x_3+1T2016', '', 'edx'),
+        ('otto', 'course-v1:OpenCraftX+12345+1T2016', 'OCX', 'OCX'),
+        ('shoppingcart', 'course-v1:MITx+15.071x_3+1T2016', '', 'edx'),
+        ('shoppingcart', 'edX/DemoX/Demo_Course', '', 'edx'),
+        ('shoppingcart', 'course-v1:OpenCraftX+12345+1T2016', '', 'OCX'),
+        ('shoppingcart', 'OpenCraftX/12345/1T2016', '', 'OCX'),
+    )
+    @unpack
+    @with_luigi_config('financial-reports', 'shoppingcart-partners', '{"OpenCraftX": "OCX", "DEFAULT": "edx"}')
+    def test_partner_short_code(self, order_processor, course_id, partner_short_code, expected_short_code):
+        self.create_task()  # Recreate task to pick up overridden Luigi configuration
+        orderitem = self.create_orderitem(
+            order_processor=order_processor,
+            course_id=course_id,
+            partner_short_code=partner_short_code,
+        )
+        self._check_output([orderitem], {'partner_short_code': expected_short_code})
+
+    @data(
+        ('', None),
+        ('OCX', 'OCX'),
+    )
+    @unpack
+    @with_luigi_config('financial-reports', 'shoppingcart-partners', '{}')
+    def test_partner_short_code_no_default(self, partner_short_code, expected_short_code):
+        self.create_task()  # Recreate task to pick up overridden Luigi configuration
+        orderitem = self.create_orderitem(partner_short_code=partner_short_code)
+        self._check_output([orderitem], {'partner_short_code': expected_short_code})
 
     def test_honor_order(self):
         # The honor code is not actually important here, the zero price is.
@@ -292,6 +330,10 @@ class ReconciliationTaskReducerTest(ReconciliationTaskMixin, ReducerTestMixin, u
             'order_line_item_price': None,
             'order_line_item_unit_price': None,
             'order_line_item_quantity': None,
+            'order_coupon_id': None,
+            'order_discount_amount': None,
+            'order_voucher_id': None,
+            'order_voucher_code': None,
             'order_refunded_amount': None,
             'order_refunded_quantity': None,
             'order_user_id': None,
@@ -319,7 +361,7 @@ class ReconciliationTaskReducerTest(ReconciliationTaskMixin, ReducerTestMixin, u
     # Single ORDERITEM tests:
     ###################################
 
-    #### Single purchase ####
+    # Single purchase #
 
     def test_normal_purchase(self):
         orderitem = self.create_orderitem()
@@ -390,7 +432,7 @@ class ReconciliationTaskReducerTest(ReconciliationTaskMixin, ReducerTestMixin, u
             'transaction_audit_code': 'REFUND_FIRST' if amount != '-50.00' else 'REFUND_NEVER_PURCHASED',
         })
 
-    #### Two purchases ####
+    # Two purchases #
 
     @data(
         (False, '100.00', 'PURCHASE_FIRST', 'ERROR_PURCHASED_BALANCE_NOT_MATCHING_OVER_CHARGE'),
@@ -425,7 +467,7 @@ class ReconciliationTaskReducerTest(ReconciliationTaskMixin, ReducerTestMixin, u
             'orderitem_audit_code': 'PURCHASED_BALANCE_MATCHING',
         })
 
-    #### One purchase and one refund ####
+    # One purchase and one refund #
 
     def test_normal_refund(self):
         orderitem = self.create_orderitem(is_refunded=True)
@@ -459,7 +501,7 @@ class ReconciliationTaskReducerTest(ReconciliationTaskMixin, ReducerTestMixin, u
             'orderitem_audit_code': orderitem_status
         })
 
-    #### One purchase and two refunds ####
+    # One purchase and two refunds #
 
     @data(
         (True, '-100.00', 'REFUND_FIRST', 'ERROR_REFUNDED_BALANCE_NOT_MATCHING_OVER_REFUND'),

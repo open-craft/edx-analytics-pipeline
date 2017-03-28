@@ -30,18 +30,20 @@ class MysqlInsertTaskMixin(OverwriteOutputMixin):
     """
     Parameters for inserting a data set into RDBMS.
 
-        credentials: Path to the external access credentials file.
-        database:  The name of the database to which to write.
-        insert_chunk_size:  The number of rows to insert at a time.
-
     """
     database = luigi.Parameter(
-        config_path={'section': 'database-export', 'name': 'database'}
+        config_path={'section': 'database-export', 'name': 'database'},
+        description='The name of the database to which to write.',
     )
     credentials = luigi.Parameter(
-        config_path={'section': 'database-export', 'name': 'credentials'}
+        config_path={'section': 'database-export', 'name': 'credentials'},
+        description='Path to the external access credentials file.',
     )
-    insert_chunk_size = luigi.IntParameter(default=100, significant=False)
+    insert_chunk_size = luigi.IntParameter(
+        default=100,
+        significant=False,
+        description='The number of rows to insert at a time.',
+    )
 
 
 class MysqlInsertTask(MysqlInsertTaskMixin, luigi.Task):
@@ -51,6 +53,7 @@ class MysqlInsertTask(MysqlInsertTaskMixin, luigi.Task):
     """
     required_tasks = None
     output_target = None
+    allow_empty_insert = False
 
     def requires(self):
         if self.required_tasks is None:
@@ -97,6 +100,11 @@ class MysqlInsertTask(MysqlInsertTaskMixin, luigi.Task):
         """List of tuples defining the names of the columns to include in each index."""
         return []
 
+    @property
+    def keys(self):
+        """List of tuples defining other keys to include in the table definition."""
+        return []
+
     def create_table(self, connection):
         """
         Override to provide code for creating the target table, if not existing.
@@ -125,6 +133,8 @@ class MysqlInsertTask(MysqlInsertTaskMixin, luigi.Task):
             columns.append(("PRIMARY KEY", "({name})".format(name=self.auto_primary_key[0])))
         for indexed_cols in self.indexes:
             columns.append(("INDEX", "({cols})".format(cols=','.join(indexed_cols))))
+        for key in self.keys:
+            columns.append((key[0], "({cols})".format(cols=','.join(key[1]))))
 
         coldefs = ','.join(
             '{name} {definition}'.format(name=name, definition=definition) for name, definition in columns
@@ -210,6 +220,7 @@ class MysqlInsertTask(MysqlInsertTaskMixin, luigi.Task):
                     marker_table=marker_table,
                     target_table=self.table,
                 )
+                log.debug(query)
                 connection.cursor().execute(query)
             except mysql.connector.Error as excp:  # handle the case where the marker_table has yet to be created
                 if excp.errno == errorcode.ER_NO_SUCH_TABLE:
@@ -220,6 +231,7 @@ class MysqlInsertTask(MysqlInsertTaskMixin, luigi.Task):
             # Use "DELETE" instead of TRUNCATE since TRUNCATE forces an implicit commit before it executes which would
             # commit the currently open transaction before continuing with the copy.
             query = "DELETE FROM {table}".format(table=self.table)
+            log.debug(query)
             connection.cursor().execute(query)
 
     def _execute_insert_query(self, cursor, value_list, column_names):
@@ -294,7 +306,7 @@ class MysqlInsertTask(MysqlInsertTaskMixin, luigi.Task):
                 self._execute_insert_query(cursor, value_list, column_names)
                 value_list = []
 
-        if self.overwrite and row_count == 0:
+        if self.overwrite and not self.allow_empty_insert and row_count == 0:
             raise Exception('Cannot overwrite a table with an empty result set.')
 
         if len(value_list) > 0:
@@ -354,11 +366,38 @@ def coerce_for_mysql_connect(input):
     if not isinstance(input, basestring):
         return input
     # Hive indicates a null value with the string "\N"
-    if input == 'None' or input == '\\N':
+    # We represent an infinite value with the string "inf", MySQL has no such representation so we use NULL
+    if input in ('None', '\\N', 'inf', '-inf'):
         return None
     if isinstance(input, str):
         return input.decode('utf-8')
     return input
+
+
+def get_mysql_query_results(credentials, database, query):
+    """
+    Executes a mysql query on the provided database and returns the results.
+    """
+
+    credentials_target = ExternalURL(url=credentials).output()
+    cred = None
+    with credentials_target.open('r') as credentials_file:
+        cred = json.load(credentials_file)
+
+    connection = mysql.connector.connect(user=cred.get('username'),
+                                         password=cred.get('password'),
+                                         host=cred.get('host'),
+                                         port=cred.get('port'),
+                                         database=database)
+
+    try:
+        cursor = connection.cursor()
+        cursor.execute(query)
+        results = cursor.fetchall()
+    finally:
+        connection.close()
+
+    return results
 
 
 class CredentialFileMysqlTarget(MySqlTarget):
@@ -425,3 +464,50 @@ class CredentialFileMysqlTarget(MySqlTarget):
             else:
                 raise
         connection.close()
+
+
+class IncrementalMysqlInsertTask(MysqlInsertTask):
+    """
+    A MySQL table that is mostly appended to, but occasionally has parts of it overwritten.
+
+    When overwriting, the task is responsible for populating some records that need to be easy to identify. There should
+    be a one-to-one relationship between a row and the task that was used to write it. It should be straightforward to
+    construct a where clause that selects all of the rows generated by this task.
+    """
+
+    def init_copy(self, connection):
+        # clear only the data for this date!
+
+        self.attempted_removal = True
+        if self.overwrite:
+            # first clear the appropriate rows from the luigi mysql marker table
+            # side-effect: sets self.output_target if it's None
+            marker_table = self.output().marker_table  # pylint: disable=no-member
+            try:
+                query = "DELETE FROM {marker_table} where `update_id`='{update_id}'".format(
+                    marker_table=marker_table,
+                    update_id=self.update_id(),
+                )
+                log.debug(query)
+                connection.cursor().execute(query)
+            except mysql.connector.Error as excp:  # handle the case where the marker_table has yet to be created
+                if excp.errno == errorcode.ER_NO_SUCH_TABLE:
+                    pass
+                else:
+                    raise
+
+            # Use "DELETE" instead of TRUNCATE since TRUNCATE forces an implicit commit before it executes which would
+            # commit the currently open transaction before continuing with the copy.
+            query = "DELETE FROM {table} WHERE {record_filter}".format(
+                table=self.table,
+                record_filter=self.record_filter
+            )
+            log.debug(query)
+            connection.cursor().execute(query)
+
+    @property
+    def record_filter(self):
+        """
+        A string that specifies the data to overwrite, this will be the entire WHERE clause of the generated query.
+        """
+        raise NotImplementedError

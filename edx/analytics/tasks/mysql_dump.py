@@ -22,11 +22,6 @@ class MysqlSelectTask(luigi.Task):
     credentials file is expected to be JSON formatted and contain a simple map specifying the host, port, username
     and password.
 
-    Parameters:
-        credentials: Path to the external access credentials file.
-        destination: The directory to write the TSV file to.
-        database: The name of the database to execute the query on.
-
     Example Credentials File::
 
         {
@@ -38,13 +33,16 @@ class MysqlSelectTask(luigi.Task):
     """
 
     credentials = luigi.Parameter(
-        config_path={'section': 'database-import', 'name': 'credentials'}
+        config_path={'section': 'database-import', 'name': 'credentials'},
+        description='Path to the external access credentials file.',
     )
     destination = luigi.Parameter(
-        config_path={'section': 'database-import', 'name': 'destination'}
+        config_path={'section': 'database-import', 'name': 'destination'},
+        description='The directory to write the TSV file to.',
     )
     database = luigi.Parameter(
-        config_path={'section': 'database-import', 'name': 'database'}
+        config_path={'section': 'database-import', 'name': 'database'},
+        description='The name of the database to execute the query on.',
     )
 
     converters = [
@@ -164,7 +162,10 @@ class MysqlSelectTask(luigi.Task):
         """
         converted_value = u'-'
         if value is not None:
-            converter = lambda x: x  # Noop
+
+            def converter(value):
+                """Provide default no-op conversion."""
+                return value
             for converter_spec in self.converters:
                 if isinstance(value, converter_spec[0]):
                     converter = converter_spec[1]

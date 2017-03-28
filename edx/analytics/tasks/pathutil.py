@@ -32,18 +32,25 @@ class PathSetTask(luigi.Task):
     """
     A task to select a subset of files in an S3 bucket or local FS.
 
-    Parameters:
-
-      src: a URL pointing to a folder in s3:// or local FS.
-      include:  a list of patterns to use to select.  Multiple patterns are OR'd.
-      manifest: a URL pointing to a manifest file location.
     """
     src = luigi.Parameter(
         is_list=True,
-        config_path={'section': 'event-logs', 'name': 'source'}
+        config_path={'section': 'event-logs', 'name': 'source'},
+        description='A URL pointing to a folder in s3:// or local FS.',
     )
-    include = luigi.Parameter(is_list=True, default=('*',))
-    manifest = luigi.Parameter(default=None)
+    include = luigi.Parameter(
+        is_list=True,
+        default=('*',),
+        description='A list of patterns to use to select.  Multiple patterns are OR\'d.',
+    )
+    manifest = luigi.Parameter(
+        default=None,
+        description='A URL pointing to a manifest file location.',
+    )
+    include_zero_length = luigi.BooleanParameter(
+        default=False,
+        description='If True, include files/directories with size zero.',
+    )
 
     def __init__(self, *args, **kwargs):
         super(PathSetTask, self).__init__(*args, **kwargs)
@@ -56,15 +63,18 @@ class PathSetTask(luigi.Task):
                 # connect lazily as needed:
                 if self.s3_conn is None:
                     self.s3_conn = boto.connect_s3()
-                for _bucket, _root, path in generate_s3_sources(self.s3_conn, src, self.include):
+                for _bucket, _root, path in generate_s3_sources(self.s3_conn, src, self.include, self.include_zero_length):
                     source = url_path_join(src, path)
                     yield ExternalURL(source)
             elif src.startswith('hdfs'):
-                for source in luigi.hdfs.listdir(src):
-                    if any(fnmatch.fnmatch(source, include_val) for include_val in self.include):
+                for source, size in luigi.hdfs.listdir(src, recursive=True, include_size=True):
+                    if not self.include_zero_length and size == 0:
+                        continue
+                    elif any(fnmatch.fnmatch(source, include_val) for include_val in self.include):
                         yield ExternalURL(source)
             else:
                 # Apply the include patterns to the relative path below the src directory.
+                # TODO: implement exclude_zero_length to match S3 case.
                 for dirpath, _dirnames, files in os.walk(src):
                     for filename in files:
                         filepath = os.path.join(dirpath, filename)
@@ -104,19 +114,34 @@ class EventLogSelectionDownstreamMixin(object):
 
     source = luigi.Parameter(
         is_list=True,
-        config_path={'section': 'event-logs', 'name': 'source'}
+        config_path={'section': 'event-logs', 'name': 'source'},
+        description='A URL to a path that contains log files that contain the events. (e.g., s3://my_bucket/foo/).',
     )
-    interval = luigi.DateIntervalParameter()
+    interval = luigi.DateIntervalParameter(
+        description='The range of dates to export logs for.',
+    )
     expand_interval = luigi.TimeDeltaParameter(
-        config_path={'section': 'event-logs', 'name': 'expand_interval'}
+        config_path={'section': 'event-logs', 'name': 'expand_interval'},
+        description='A time interval to add to the beginning and end of the interval to expand the windows of '
+        'files captured.',
     )
     pattern = luigi.Parameter(
         is_list=True,
-        config_path={'section': 'event-logs', 'name': 'pattern'}
+        config_path={'section': 'event-logs', 'name': 'pattern'},
+        description='A regex with a named capture group for the date that approximates the date that the events '
+        'within were emitted. Note that the search interval is expanded, so events don\'t have to be in exactly '
+        'the right file in order for them to be processed.',
+    )
+
+    date_pattern = luigi.Parameter(
+        default='%Y%m%d',
+        description='The format of the date as it appears in the source file name. Note that this correlates with the '
+        'named capture group for date in the pattern parameter. This is intended to select relevant event log files '
+        'by making sure the date is within the interval.',
     )
 
 
-class EventLogSelectionTask(EventLogSelectionDownstreamMixin, luigi.WrapperTask):
+class PathSelectionByDateIntervalTask(EventLogSelectionDownstreamMixin, luigi.WrapperTask):
     """
     Select all relevant event log input files from a directory.
 
@@ -124,18 +149,10 @@ class EventLogSelectionTask(EventLogSelectionDownstreamMixin, luigi.WrapperTask)
     that a pattern can be used to find them. Filenames are expected to contain a date which represents an approximation
     of the date found in the events themselves.
 
-    Parameters:
-        source: A URL to a path that contains log files that contain the events.
-        interval: The range of dates to export logs for.
-        expand_interval: A time interval to add to the beginning and end of the interval to expand the windows of files
-            captured.
-        pattern: A regex with a named capture group for the date that approximates the date that the events within were
-            emitted. Note that the search interval is expanded, so events don't have to be in exactly the right file
-            in order for them to be processed.
     """
 
     def __init__(self, *args, **kwargs):
-        super(EventLogSelectionTask, self).__init__(*args, **kwargs)
+        super(PathSelectionByDateIntervalTask, self).__init__(*args, **kwargs)
         self.interval = DateInterval(
             self.interval.date_a - self.expand_interval,
             self.interval.date_b + self.expand_interval
@@ -186,8 +203,10 @@ class EventLogSelectionTask(EventLogSelectionDownstreamMixin, luigi.WrapperTask)
 
     def _get_hdfs_urls(self, source):
         """Recursively list all files inside the source directory on the hdfs filesystem."""
-        for source in luigi.hdfs.listdir(source):
-            yield source
+        if luigi.hdfs.exists(source):
+            # listdir raises an exception if the source doesn't exist.
+            for source in luigi.hdfs.listdir(source, recursive=True):
+                yield source
 
     def _get_local_urls(self, source):
         """Recursively list all files inside the source directory on the local filesystem."""
@@ -215,7 +234,7 @@ class EventLogSelectionTask(EventLogSelectionDownstreamMixin, luigi.WrapperTask)
         # If it doesn't contain such a group, then assume that it should be included.
         should_include = True
         if 'date' in match.groupdict():
-            parsed_datetime = datetime.datetime.strptime(match.group('date'), '%Y%m%d')
+            parsed_datetime = datetime.datetime.strptime(match.group('date'), self.date_pattern)
             parsed_date = datetime.date(parsed_datetime.year, parsed_datetime.month, parsed_datetime.day)
             should_include = parsed_date in self.interval
 
@@ -229,20 +248,15 @@ class EventLogSelectionMixin(EventLogSelectionDownstreamMixin):
     """
     Extract events corresponding to a specified time interval and outputs them from a mapper.
 
-    Parameters:
-        source: A URL to a path that contains log files that contain the events.
-        interval: The range of dates to export logs for.
-        pattern: A regex with a named capture group for the date that approximates the date that the events within were
-            emitted. Note that the search interval is expanded, so events don't have to be in exactly the right file
-            in order for them to be processed.
     """
 
     def requires(self):
-        """Use EventLogSelectionTask to define inputs."""
-        return EventLogSelectionTask(
+        """Use PathSelectionByDateIntervalTask to define inputs."""
+        return PathSelectionByDateIntervalTask(
             source=self.source,
             interval=self.interval,
             pattern=self.pattern,
+            date_pattern=self.date_pattern,
         )
 
     def init_local(self):
@@ -279,3 +293,17 @@ class EventLogSelectionMixin(EventLogSelectionDownstreamMixin):
         except KeyError:
             self.incr_counter('Event', 'Missing Time Field', 1)
             return None
+
+    def get_map_input_file(self):
+        """Get the name of the input file from Hadoop."""
+        # Hadoop sets an environment variable with the full URL of the input file. This url will be something like:
+        # s3://bucket/root/host1/tracking.log.gz. In this example, assume self.source is "s3://bucket/root".
+        try:
+            return os.environ['mapreduce_map_input_file']
+        except KeyError:
+            try:
+                # Older versions of Hadoop support a deprecated key, so also try that.
+                return os.environ['map_input_file']
+            except KeyError:
+                log.warn('mapreduce_map_input_file not defined in os.environ, unable to determine input file path')
+                return ''
