@@ -66,21 +66,6 @@ class CourseBlocksTestMixin(object):
 
 
 @ddt
-class CourseBlocksApiDataTaskTest(CourseBlocksTestMixin, TestCase):
-    """Tests the CourseBlocksApiDataTask basic functions. """
-
-    def test_complete(self):
-        self.create_task()
-        self.assertFalse(self.task.complete())
-
-        # Create the output_root/_SUCCESS file
-        with open(os.path.join(self.output_dir, '_SUCCESS'), 'w') as success:
-            success.write('')
-        self.assertTrue(self.task.output().exists())
-        self.assertTrue(self.task.complete())
-
-
-@ddt
 class CourseBlocksApiDataMapperTaskTest(CourseBlocksTestMixin, MapperTestMixin, TestCase):
     """Tests the CourseBlocksApiDataTask mapper output"""
 

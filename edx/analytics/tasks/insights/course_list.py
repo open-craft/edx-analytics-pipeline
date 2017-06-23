@@ -202,14 +202,7 @@ class CourseListApiDataTask(CourseListDownstreamMixin, MapReduceJobTask):
             yield record.to_string_tuple()
 
     def output(self):
-        """Expose the data location target as the output."""
         return get_target_from_url(self.output_root)
-
-    def complete(self):
-        """
-        The task is complete if the output_root/_SUCCESS file is present.
-        """
-        return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
 
     def run(self):
         """
@@ -269,9 +262,3 @@ class CourseListPartitionTask(CourseListDownstreamMixin, MapReduceJobTaskMixin, 
     def output_root(self):
         """Expose the partition location path as the output root."""
         return self.partition_location
-
-    def complete(self):
-        """
-        The task is complete if the output_root/_SUCCESS file is present.
-        """
-        return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()

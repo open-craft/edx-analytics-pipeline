@@ -344,16 +344,6 @@ class LatestProblemResponseDataTaskTest(ProblemResponseTestMixin, ReducerTestMix
             *args, **kwargs
         )
 
-    def test_complete(self):
-        self.create_task()
-        self.assertFalse(self.task.complete())
-
-        # Create the output_root/_SUCCESS file
-        with open(os.path.join(self.output_dir, '_SUCCESS'), 'w') as success:
-            success.write('')
-        self.assertTrue(self.task.output().exists())
-        self.assertTrue(self.task.complete())
-
     def test_extra_modules(self):
         import html5lib
         self.assertIn(html5lib, self.task.extra_modules())

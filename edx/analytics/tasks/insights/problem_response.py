@@ -364,12 +364,6 @@ class LatestProblemResponseDataTask(EventLogSelectionMixin,
     def output(self):
         return get_target_from_url(self.output_root)
 
-    def complete(self):
-        """
-        The task is complete if the output_root/_SUCCESS file is present.
-        """
-        return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
-
     def run(self):
         """
         Clear out output if data is incomplete, or if overwrite requested.
@@ -387,12 +381,6 @@ class LatestProblemResponsePartitionTask(ProblemResponseTableMixin, HivePartitio
     def output_root(self):
         """Expose the partition location path as the output root."""
         return self.partition_location
-
-    def complete(self):
-        """
-        The task is complete if the output_root/_SUCCESS file is present.
-        """
-        return get_target_from_url(url_path_join(self.output_root, '_SUCCESS')).exists()
 
     @property
     def hive_table_task(self):
@@ -524,12 +512,6 @@ class ProblemResponseLocationPartitionTask(ProblemResponseTableMixin, HivePartit
     def output_root(self):
         """Expose the partition location path as the output root."""
         return self.partition_location
-
-    def complete(self):
-        """
-        The task is complete if the output_root is present.
-        """
-        return get_target_from_url(self.output_root).exists()
 
     @property
     def hive_table_task(self):
