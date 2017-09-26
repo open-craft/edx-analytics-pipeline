@@ -1400,15 +1400,15 @@ class ModuleEngagementWorkflowTask(ModuleEngagementDownstreamMixin, ModuleEngage
 
     def requires(self):
         overwrite_from_date = self.date - datetime.timedelta(days=self.overwrite_n_days)
-        yield ModuleEngagementRosterIndexTask(
+
+        # Cloudera doesn't require Elasticsearch, so we don't run ModuleEngagementRosterIndexTask.
+        # Instead, we just create the partition, so the data is available in hive.
+        yield ModuleEngagementRosterPartitionTask(
+            mapreduce_engine=self.mapreduce_engine,
             date=self.date,
-            indexing_tasks=self.indexing_tasks,
-            scale_factor=self.scale_factor,
-            obfuscate=self.obfuscate,
             n_reduce_tasks=self.n_reduce_tasks,
             overwrite_from_date=overwrite_from_date,
             overwrite=self.overwrite,
-            throttle=self.throttle
         )
         yield ModuleEngagementSummaryMetricRangesMysqlTask(
             date=self.date,
