@@ -189,7 +189,7 @@
       when: override_config is defined
 
     - name: boto configured
-      copy: src=boto.cfg dest={{ working_repo_dir }}/.boto mode=644
+      copy: src=boto.cfg dest={{ home }}/.boto mode=644
 
     - name: show working directory
       debug: var=working_repo_dir
