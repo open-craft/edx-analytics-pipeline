@@ -144,9 +144,9 @@ class ScalableS3Client(S3Client):
             aws_access_key_id = self._get_s3_config('aws_access_key_id')
         if not aws_secret_access_key:
             aws_secret_access_key = self._get_s3_config('aws_secret_access_key')
-        # add "host" to s3 config
-        host = 's3.amazonaws.com'
-        self.s3 = connect_s3(aws_access_key_id, aws_secret_access_key, is_secure=True, host=host, **kwargs)
+        if 'host' not in kwargs:
+            kwargs['host'] = self._get_s3_config('host') or 's3.amazonaws.com'
+        self.s3 = connect_s3(aws_access_key_id, aws_secret_access_key, is_secure=True, **kwargs)
 
     def put(self, local_path, destination_s3_path):
         """Put an object stored locally to an S3 path."""
