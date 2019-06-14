@@ -6,26 +6,69 @@ End to end test of the per-module engagement workflow.
 import datetime
 import logging
 
+import ddt
+
 from edx.analytics.tasks.tests.acceptance import AcceptanceTestCase, when_elasticsearch_available
 
 log = logging.getLogger(__name__)
 
 
+@ddt.ddt
 class ModuleEngagementAcceptanceTest(AcceptanceTestCase):
     """Ensure engagement data is populated in the result store incrementally."""
 
     EMPTY_INPUT_FILE = 'module_engagement_acceptance_empty.log'
+    ANONYMOUS_INPUT_FILE = 'module_engagement_acceptance_anonymous.log'
     INPUT_FILE = 'module_engagement_acceptance_tracking_{date}.log'
     NUM_REDUCERS = 1
 
+    APRIL_THIRTEENTH = datetime.date(2015, 4, 13)
+    APRIL_SIXTEENTH = datetime.date(2015, 4, 16)
+
     @when_elasticsearch_available
-    def test_roster_generation(self):
+    @ddt.data(
+        (
+            {
+                'module-engagement': {
+                    'allow_empty_insert': True,
+                }
+            }, []),
+        (
+            {
+                'module-engagement': {
+                    'allow_empty_insert': True,
+                    'store_anonymous_username': 'ANONYMOUS USER',
+                }
+            }, [
+                (self.APRIL_THIRTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'ANONYMOUS USER', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
+                (self.APRIL_THIRTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'ANONYMOUS USER', 'video', '8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (self.APRIL_THIRTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 2),
+                (self.APRIL_THIRTEENTH, 'edX/DemoX/Demo_Course_2', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (self.APRIL_THIRTEENTH, 'edX/DemoX/Demo_Course_2', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (self.APRIL_SIXTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'ANONYMOUS USER', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
+                (self.APRIL_SIXTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'ANONYMOUS USER', 'video', '8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 6),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/0d759dee4f9d459c8956136dbde55f02', 'attempted', 1),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/75f9562c77bc4858b61f907bb810d974', 'attempted', 2),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/75f9562c77bc4858b61f907bb810d974', 'completed', 1),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'attempted', 3),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'completed', 1),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-0b9e39477cf34507a7a48f74be381fdd', 'viewed', 2),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course_2', 'ANONYMOUS USER', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course_2', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'attempted', 1),
+            ]
+        ),
+    )
+    @unpack
+    def test_roster_generation(self, config_override, extra_module_engagement_rows):
         for day in range(2, 17):
             fake_date = datetime.date(2015, 4, day)
             if day in (13, 16):
                 self.upload_tracking_log(self.INPUT_FILE.format(date=fake_date.strftime('%Y%m%d')), fake_date)
             else:
                 self.upload_tracking_log(self.EMPTY_INPUT_FILE, fake_date)
+        self.upload_tracking_log(self.ANONYMOUS_INPUT_FILE, fake_date)
 
         self.execute_sql_fixture_file('load_auth_user_for_internal_reporting_user.sql')
         self.execute_sql_fixture_file('load_auth_userprofile.sql')
@@ -46,11 +89,7 @@ class ModuleEngagementAcceptanceTest(AcceptanceTestCase):
                 '--date', '2015-04-17',
                 '--n-reduce-tasks', str(self.NUM_REDUCERS),
             ],
-            config_override={
-                'module-engagement': {
-                    'allow_empty_insert': True
-                }
-            }
+            config_override=config_override,
         )
 
         query = {"query": {"match_all": {}}}
@@ -221,28 +260,25 @@ class ModuleEngagementAcceptanceTest(AcceptanceTestCase):
             cursor.execute('SELECT date, course_id, username, entity_type, entity_id, event, count FROM module_engagement')
             results = cursor.fetchall()
 
-        april_thirteenth = datetime.date(2015, 4, 13)
-        april_sixteenth = datetime.date(2015, 4, 16)
-
         self.assertItemsEqual(
             [row for row in results],
             [
-                (april_thirteenth, 'course-v1:edX+DemoX+Demo_Course_2015', 'honor', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
-                (april_thirteenth, 'course-v1:edX+DemoX+Demo_Course_2015', 'honor', 'video', '8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
-                (april_thirteenth, 'edX/DemoX/Demo_Course', 'honor', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 2),
-                (april_thirteenth, 'edX/DemoX/Demo_Course_2', 'honor', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
-                (april_thirteenth, 'edX/DemoX/Demo_Course_2', 'staff', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
-                (april_sixteenth, 'course-v1:edX+DemoX+Demo_Course_2015', 'honor', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
-                (april_sixteenth, 'course-v1:edX+DemoX+Demo_Course_2015', 'honor', 'video', '8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
-                (april_sixteenth, 'edX/DemoX/Demo_Course', 'honor', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 6),
-                (april_sixteenth, 'edX/DemoX/Demo_Course', 'honor', 'problem', 'i4x://edX/DemoX/problem/0d759dee4f9d459c8956136dbde55f02', 'attempted', 1),
-                (april_sixteenth, 'edX/DemoX/Demo_Course', 'honor', 'problem', 'i4x://edX/DemoX/problem/75f9562c77bc4858b61f907bb810d974', 'attempted', 2),
-                (april_sixteenth, 'edX/DemoX/Demo_Course', 'honor', 'problem', 'i4x://edX/DemoX/problem/75f9562c77bc4858b61f907bb810d974', 'completed', 1),
-                (april_sixteenth, 'edX/DemoX/Demo_Course', 'honor', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'attempted', 3),
-                (april_sixteenth, 'edX/DemoX/Demo_Course', 'honor', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'completed', 1),
-                (april_sixteenth, 'edX/DemoX/Demo_Course', 'honor', 'video', 'i4x-edX-DemoX-video-0b9e39477cf34507a7a48f74be381fdd', 'viewed', 2),
-                (april_sixteenth, 'edX/DemoX/Demo_Course', 'honor', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
-                (april_sixteenth, 'edX/DemoX/Demo_Course_2', 'honor', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
-                (april_sixteenth, 'edX/DemoX/Demo_Course_2', 'honor', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'attempted', 1),
-            ]
+                (self.APRIL_THIRTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'honor', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
+                (self.APRIL_THIRTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'honor', 'video', '8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (self.APRIL_THIRTEENTH, 'edX/DemoX/Demo_Course', 'honor', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 2),
+                (self.APRIL_THIRTEENTH, 'edX/DemoX/Demo_Course_2', 'honor', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (self.APRIL_THIRTEENTH, 'edX/DemoX/Demo_Course_2', 'staff', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (self.APRIL_SIXTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'honor', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
+                (self.APRIL_SIXTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'honor', 'video', '8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'honor', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 6),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'honor', 'problem', 'i4x://edX/DemoX/problem/0d759dee4f9d459c8956136dbde55f02', 'attempted', 1),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'honor', 'problem', 'i4x://edX/DemoX/problem/75f9562c77bc4858b61f907bb810d974', 'attempted', 2),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'honor', 'problem', 'i4x://edX/DemoX/problem/75f9562c77bc4858b61f907bb810d974', 'completed', 1),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'honor', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'attempted', 3),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'honor', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'completed', 1),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'honor', 'video', 'i4x-edX-DemoX-video-0b9e39477cf34507a7a48f74be381fdd', 'viewed', 2),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'honor', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course_2', 'honor', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
+                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course_2', 'honor', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'attempted', 1),
+            ] + extra_module_engagement_rows
         )
