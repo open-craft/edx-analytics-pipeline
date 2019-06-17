@@ -25,6 +25,34 @@ class ModuleEngagementAcceptanceTest(AcceptanceTestCase):
     APRIL_THIRTEENTH = datetime.date(2015, 4, 13)
     APRIL_SIXTEENTH = datetime.date(2015, 4, 16)
 
+    """
+        (
+            {
+                'module-engagement': {
+                    'allow_empty_insert': True,
+                    'store_anonymous_username': 'ANONYMOUS USER',
+                }
+            }, [
+                (APRIL_THIRTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'ANONYMOUS USER', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
+                (APRIL_THIRTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'ANONYMOUS USER', 'video', '8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (APRIL_THIRTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 2),
+                (APRIL_THIRTEENTH, 'edX/DemoX/Demo_Course_2', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (APRIL_THIRTEENTH, 'edX/DemoX/Demo_Course_2', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (APRIL_SIXTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'ANONYMOUS USER', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
+                (APRIL_SIXTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'ANONYMOUS USER', 'video', '8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 6),
+                (APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/0d759dee4f9d459c8956136dbde55f02', 'attempted', 1),
+                (APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/75f9562c77bc4858b61f907bb810d974', 'attempted', 2),
+                (APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/75f9562c77bc4858b61f907bb810d974', 'completed', 1),
+                (APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'attempted', 3),
+                (APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'completed', 1),
+                (APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-0b9e39477cf34507a7a48f74be381fdd', 'viewed', 2),
+                (APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
+                (APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course_2', 'ANONYMOUS USER', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
+                (APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course_2', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'attempted', 1),
+            ]
+        ),
+    """
     @when_elasticsearch_available
     @ddt.data(
         (
@@ -33,34 +61,8 @@ class ModuleEngagementAcceptanceTest(AcceptanceTestCase):
                     'allow_empty_insert': True,
                 }
             }, []),
-        (
-            {
-                'module-engagement': {
-                    'allow_empty_insert': True,
-                    'store_anonymous_username': 'ANONYMOUS USER',
-                }
-            }, [
-                (self.APRIL_THIRTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'ANONYMOUS USER', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
-                (self.APRIL_THIRTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'ANONYMOUS USER', 'video', '8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
-                (self.APRIL_THIRTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 2),
-                (self.APRIL_THIRTEENTH, 'edX/DemoX/Demo_Course_2', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
-                (self.APRIL_THIRTEENTH, 'edX/DemoX/Demo_Course_2', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
-                (self.APRIL_SIXTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'ANONYMOUS USER', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
-                (self.APRIL_SIXTEENTH, 'course-v1:edX+DemoX+Demo_Course_2015', 'ANONYMOUS USER', 'video', '8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
-                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 6),
-                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/0d759dee4f9d459c8956136dbde55f02', 'attempted', 1),
-                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/75f9562c77bc4858b61f907bb810d974', 'attempted', 2),
-                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/75f9562c77bc4858b61f907bb810d974', 'completed', 1),
-                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'attempted', 3),
-                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'completed', 1),
-                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-0b9e39477cf34507a7a48f74be381fdd', 'viewed', 2),
-                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course', 'ANONYMOUS USER', 'video', 'i4x-edX-DemoX-video-8c0028eb2a724f48a074bc184cd8635f', 'viewed', 1),
-                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course_2', 'ANONYMOUS USER', 'discussion', 'cba3e4cd91d0466b9ac50926e495b76f', 'contributed', 3),
-                (self.APRIL_SIXTEENTH, 'edX/DemoX/Demo_Course_2', 'ANONYMOUS USER', 'problem', 'i4x://edX/DemoX/problem/a0effb954cca4759994f1ac9e9434bf4', 'attempted', 1),
-            ]
-        ),
     )
-    @unpack
+    @ddt.unpack
     def test_roster_generation(self, config_override, extra_module_engagement_rows):
         for day in range(2, 17):
             fake_date = datetime.date(2015, 4, day)
