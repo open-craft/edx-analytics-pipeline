@@ -14,7 +14,6 @@ html5lib==1.0b3 	# MIT
 isoweek==1.3.1		# BSD
 http://cdn.mysql.com/Downloads/Connector-Python/mysql-connector-python-1.2.2.zip  	# GPL v2 with FOSS License Exception
 numpy==1.11.3 		# BSD
-pandas==0.13.0 		# BSD
 paypalrestsdk==1.9.0    # Paypal SDK License
 pygeoip==0.3.2 		# LGPL
 python-cjson==1.1.0	# LGPL
