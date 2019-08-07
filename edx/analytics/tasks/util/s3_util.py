@@ -132,7 +132,7 @@ class ScalableS3Client(S3Client):
 
     def __init__(self, *args, **kwargs):
         if 'host' not in kwargs:
-            kwargs['host'] = self._get_s3_config('host') or 's3.amazonaws.com'
+            kwargs['host'] = self._get_s3_config('host') or 's3.eu-west-1.amazonaws.com'
 
         super(ScalableS3Client, self).__init__(*args, **kwargs)
 
