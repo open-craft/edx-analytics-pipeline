@@ -37,6 +37,7 @@ class MapReduceJobTaskMixin(object):
         'running with manifest file, specify "oddjob.ManifestTextInputFormat" for input_format.',
     )
     lib_jar = luigi.ListParameter(
+        config_path={'section': 'map-reduce', 'name': 'lib_jar'},
         default=[],
         significant=False,
         description='A list of library jars that the Hadoop job can make use of.',
