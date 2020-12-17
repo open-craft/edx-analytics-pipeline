@@ -42,7 +42,7 @@
       - Red Hat Enterprise Linux
       - Amazon
 
-    # - override_config: path/to/config.cfg (optionally adds a luigi config override)
+    - override_config: client.cfg
     # - secure_config: path/to/config.cfg on the remote machine, could be from a checked out repo
 
     - pipeline_repo_dir_name: repo
