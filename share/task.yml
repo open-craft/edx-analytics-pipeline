@@ -150,7 +150,7 @@
 
     - name: update pip
       command: >
-        {{ working_venv_dir }}/bin/pip install -U pip
+        {{ working_venv_dir }}/bin/pip install -U pip==9.0.1
 
     - name: virtualenv initialized on Debian
       shell: >
