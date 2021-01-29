@@ -148,9 +148,15 @@
         virtualenv --python={{ virtualenv_python }} {{ virtualenv_extra_args }} {{ working_venv_dir }}
       when: not virtualenv_created.stat.exists
 
-    - name: update pip
-      command: >
-        {{ working_venv_dir }}/bin/pip install -U pip
+    - name: download pip
+      get_url:
+        url: 'https://bootstrap.pypa.io/2.7/get-pip.py'
+        dest: /tmp/get-pip.py
+
+    - name: install pip
+      command: "{{ working_venv_dir }}/bin/python get-pip.py"
+      args:
+        chdir: /tmp
 
     - name: virtualenv initialized on Debian
       shell: >
